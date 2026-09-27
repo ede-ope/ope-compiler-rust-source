@@ -1472,12 +1472,9 @@ impl<'a> AstMacroExpandsion<'a> {
                 // };
                 let mut new_parser = Parser::new(expanded.clone(), self.file.clone(), false);
 
-                let from_stms = new_parser.parse_stmts();
+                let stms = new_parser.parse_stmts();
 
-                let mut block = Vec::new();
-                if let Ok(b) = from_stms {
-                    block = b.0;
-                }
+                let block = stms.0;
 
                 let expr = Expr {
                     kind: ExprKind::Block(block),

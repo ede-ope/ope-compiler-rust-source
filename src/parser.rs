@@ -131,7 +131,7 @@ pub enum TopLevel {
         block: Expr,
         info: StmtInfo,
     },
-    // Foo
+    Foo,
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
@@ -233,6 +233,7 @@ pub enum CustomLevel {
         cases: Vec<MacroCase>,
         info: StmtInfo,
     },
+    Foo,
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
@@ -407,7 +408,8 @@ pub enum DataState {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 #[allow(dead_code)]
 pub enum LibNextedLevel {
-    To(i32), All
+    To(i32),
+    All,
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
@@ -639,7 +641,7 @@ impl Display for ExprKind {
                 let strg = format!("({} as {})", expr.kind, ty.hint);
 
                 write!(f, "'{}'", &strg)
-            },
+            }
             ExprKind::Address(status, expr) => {
                 let strg = format!(
                     "@{}{}",
@@ -651,7 +653,7 @@ impl Display for ExprKind {
                 );
 
                 write!(f, "'{}'", &strg)
-            },
+            }
             ExprKind::ArgBuffer {
                 asy: _,
                 generics: _,
@@ -1112,6 +1114,7 @@ pub struct Parser {
     worker_usages: Option<TopLevel>,
     is_entry: bool,
     bridges: Vec<BridgeDecl>,
+    zero_span: Span,
     pub errs: Vec<Error>,
 }
 
@@ -1119,12 +1122,17 @@ impl Parser {
     pub fn new(tokens: Vec<FullTok>, file: String, is_entry: bool) -> Self {
         let errs = vec![];
         Self {
-            file,
             tokens,
             pos: 0,
             worker_usages: None,
             is_entry,
             bridges: vec![],
+            zero_span: Span {
+                st: Pos { column: 0, line: 0 },
+                en: Pos { column: 0, line: 0 },
+                file: file.clone(),
+            },
+            file,
             errs,
         }
     }
@@ -1213,41 +1221,55 @@ impl Parser {
         matches!(self.peek(), None)
     }
 
-    fn expect_ident(&mut self) -> Result<Ident, ()> {
+    fn expect_ident(&mut self) -> Ident {
         match self.advance() {
             Some(FullTok {
                 kind: Token::Identifier(s),
                 span,
-            }) => Ok(Ident {
+            }) => Ident {
                 ident: s.to_string(),
                 span,
-            }),
-            Some(oth) => Err(self.errs.push(Error {
-                message: format!("ident ni hó ńretí dípò {:?}", oth.kind),
-                span: Span {
-                    st: Pos {
-                        column: oth.span.st.column,
-                        line: oth.span.st.line,
+            },
+            Some(oth) => {
+                self.errs.push(Error {
+                    message: format!("ident ni hó ńretí dípò {:?}", oth.kind),
+                    span: Span {
+                        st: Pos {
+                            column: oth.span.st.column,
+                            line: oth.span.st.line,
+                        },
+                        en: Pos {
+                            column: oth.span.en.column,
+                            line: oth.span.en.line,
+                        },
+                        file: self.file.clone(),
                     },
-                    en: Pos {
-                        column: oth.span.en.column,
-                        line: oth.span.en.line,
+                });
+
+                Ident {
+                    ident: String::new(),
+                    span: self.zero_span.clone(),
+                }
+            }
+            None => {
+                self.errs.push(Error {
+                    message: String::from("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
+                    span: Span {
+                        st: Pos { column: 0, line: 0 },
+                        en: Pos { column: 0, line: 0 },
+                        file: self.file.clone(),
                     },
-                    file: self.file.clone(),
-                },
-            })),
-            None => Err(self.errs.push(Error {
-                message: String::from("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
-                span: Span {
-                    st: Pos { column: 0, line: 0 },
-                    en: Pos { column: 0, line: 0 },
-                    file: self.file.clone(),
-                },
-            })),
+                });
+
+                Ident {
+                    ident: format!(""),
+                    span: self.zero_span.clone(),
+                }
+            }
         }
     }
 
-    fn expect_typespec(&mut self) -> Result<TypeSpec, ()> {
+    fn expect_typespec(&mut self) -> TypeSpec {
         let tok = self.advance();
         // Unsigneds
         let _u8 = String::from("8p");
@@ -1294,409 +1316,409 @@ impl Parser {
                             }) => {
                                 self.expect(&Token::DDot);
                                 match self.advance() {
-                                    Some(FullTok { kind: Token::Number(n2), span: sp2 }) => {
+                                    Some(FullTok {
+                                        kind: Token::Number(n2),
+                                        span: sp2,
+                                    }) => {
                                         self.expect(&Token::RBracket);
                                         if s == _u8 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::U8(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _u16 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::U16(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    }),
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _u32 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::U32(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _u64 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::U64(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                            }
-                                                        })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _u128 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::U128(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _usize {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::USize(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _i8 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::I8(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _i16 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::I16(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _i32 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::I32(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _i64 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::I64(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _i128 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::I128(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _isize {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::ISize(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _f32 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::F32(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else if s == _f64 {
-                                            Ok(TypeSpec {
-                                                hint: TypeHint::F64(
-                                                    Some(IntRange{
-                                                        st: n,
-                                                        en: n2,
-                                                        span: Span {
-                                                            st: sp1.st,
-                                                            en: sp2.en.clone(),
-                                                            file: self.file.clone()
-                                                        }
-                                                    })
-                                                ),
-                                                span
-                                            })
-                                        }else {
-                                            Err(
-                                                self.errs.push(Error{
-                                                    message: String::from("ọ̀kan nínú àwọn irú iye ni oó yẹ kí oó wà níbí yìí"),
+                                            TypeSpec {
+                                                hint: TypeHint::U8(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
                                                     span: Span {
-                                                        st: Pos {
-                                                            column: self.peek_span().st.column,
-                                                            line: self.peek_span().st.line
-                                                        },
-                                                        en: Pos {
-                                                            column: self.peek_span().en.column,
-                                                            line: self.peek_span().en.line
-                                                        },
-                                                        file: self.file.clone()
-                                                    }
-                                                })
-                                            )
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _u16 {
+                                            TypeSpec {
+                                                hint: TypeHint::U16(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _u32 {
+                                            TypeSpec {
+                                                hint: TypeHint::U32(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _u64 {
+                                            TypeSpec {
+                                                hint: TypeHint::U64(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _u128 {
+                                            TypeSpec {
+                                                hint: TypeHint::U128(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _usize {
+                                            TypeSpec {
+                                                hint: TypeHint::USize(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _i8 {
+                                            TypeSpec {
+                                                hint: TypeHint::I8(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _i16 {
+                                            TypeSpec {
+                                                hint: TypeHint::I16(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _i32 {
+                                            TypeSpec {
+                                                hint: TypeHint::I32(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _i64 {
+                                            TypeSpec {
+                                                hint: TypeHint::I64(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _i128 {
+                                            TypeSpec {
+                                                hint: TypeHint::I128(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _isize {
+                                            TypeSpec {
+                                                hint: TypeHint::ISize(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _f32 {
+                                            TypeSpec {
+                                                hint: TypeHint::F32(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else if s == _f64 {
+                                            TypeSpec {
+                                                hint: TypeHint::F64(Some(IntRange {
+                                                    st: n,
+                                                    en: n2,
+                                                    span: Span {
+                                                        st: sp1.st,
+                                                        en: sp2.en.clone(),
+                                                        file: self.file.clone(),
+                                                    },
+                                                })),
+                                                span,
+                                            }
+                                        } else {
+                                            self.errs.push(Error{
+                                                message: String::from("ọ̀kan nínú àwọn irú iye ni oó yẹ kí oó wà níbí yìí"),
+                                                span: Span {
+                                                    st: Pos {
+                                                        column: self.peek_span().st.column,
+                                                        line: self.peek_span().st.line
+                                                    },
+                                                    en: Pos {
+                                                        column: self.peek_span().en.column,
+                                                        line: self.peek_span().en.line
+                                                    },
+                                                    file: self.file.clone()
+                                                }
+                                            });
+
+                                            TypeSpec {
+                                                hint: TypeHint::Bool,
+                                                span: self.zero_span.clone(),
+                                            }
                                         }
                                     }
                                     Some(oth) => {
-                                        Err(
-                                            self.errs.push(Error{
-                                                message: format!("Òǹkà ni oó yẹ kí oó wà ní ipò yìí, dípò, '{:?}' ni oó wà níbẹ̀", oth.kind),
-                                                span: Span {
-                                                    st: Pos {
-                                                        column: self.peek_span().st.column,
-                                                        line: self.peek_span().st.line
-                                                    },
-                                                    en: Pos {
-                                                        column: self.peek_span().en.column,
-                                                        line: self.peek_span().en.line
-                                                    },
-                                                    file: self.file.clone()
-                                                }
-                                            })
-                                        )
+                                        self.errs.push(Error{
+                                            message: format!("Òǹkà ni oó yẹ kí oó wà ní ipò yìí, dípò, '{:?}' ni oó wà níbẹ̀", oth.kind),
+                                            span: Span {
+                                                st: Pos {
+                                                    column: self.peek_span().st.column,
+                                                    line: self.peek_span().st.line
+                                                },
+                                                en: Pos {
+                                                    column: self.peek_span().en.column,
+                                                    line: self.peek_span().en.line
+                                                },
+                                                file: self.file.clone()
+                                            }
+                                        });
+
+                                        TypeSpec {
+                                            hint: TypeHint::Bool,
+                                            span: self.zero_span.clone(),
+                                        }
                                     }
                                     None => {
-                                        Err(
-                                            self.errs.push(Error{
-                                                message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
-                                                span: Span {
-                                                    st: Pos {
-                                                        column: self.peek_span().st.column,
-                                                        line: self.peek_span().st.line
-                                                    },
-                                                    en: Pos {
-                                                        column: self.peek_span().en.column,
-                                                        line: self.peek_span().en.line
-                                                    },
-                                                    file: self.file.clone()
-                                                }
-                                            })
-                                        )
+                                        self.errs.push(Error {
+                                            message: format!(
+                                                "Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"
+                                            ),
+                                            span: Span {
+                                                st: Pos {
+                                                    column: self.peek_span().st.column,
+                                                    line: self.peek_span().st.line,
+                                                },
+                                                en: Pos {
+                                                    column: self.peek_span().en.column,
+                                                    line: self.peek_span().en.line,
+                                                },
+                                                file: self.file.clone(),
+                                            },
+                                        });
+
+                                        TypeSpec {
+                                            hint: TypeHint::Bool,
+                                            span: self.zero_span.clone(),
+                                        }
                                     }
                                 }
                             }
-                            Some(oth) => Err(self.errs.push(Error {
-                                message: format!(
-                                    "Òǹkà ni oó yẹ kí oó wà nípò yìí, dípò, '{:?}' ni oó wà níbẹ̀",
-                                    oth.kind
-                                ),
-                                span: Span {
-                                    st: Pos {
-                                        column: self.peek_span().st.column,
-                                        line: self.peek_span().st.line,
+                            Some(oth) => {
+                                self.errs.push(Error {
+                                    message: format!(
+                                        "Òǹkà ni oó yẹ kí oó wà nípò yìí, dípò, '{:?}' ni oó wà níbẹ̀",
+                                        oth.kind
+                                    ),
+                                    span: Span {
+                                        st: Pos {
+                                            column: self.peek_span().st.column,
+                                            line: self.peek_span().st.line,
+                                        },
+                                        en: Pos {
+                                            column: self.peek_span().en.column,
+                                            line: self.peek_span().en.line,
+                                        },
+                                        file: self.file.clone(),
                                     },
-                                    en: Pos {
-                                        column: self.peek_span().en.column,
-                                        line: self.peek_span().en.line,
+                                });
+
+                                TypeSpec {
+                                    hint: TypeHint::Bool,
+                                    span: self.zero_span.clone(),
+                                }
+                            }
+                            None => {
+                                self.errs.push(Error {
+                                    message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
+                                    span: Span {
+                                        st: Pos {
+                                            column: self.peek_span().st.column,
+                                            line: self.peek_span().st.line,
+                                        },
+                                        en: Pos {
+                                            column: self.peek_span().en.column,
+                                            line: self.peek_span().en.line,
+                                        },
+                                        file: self.file.clone(),
                                     },
-                                    file: self.file.clone(),
-                                },
-                            })),
-                            None => Err(self.errs.push(Error {
-                                message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
-                                span: Span {
-                                    st: Pos {
-                                        column: self.peek_span().st.column,
-                                        line: self.peek_span().st.line,
-                                    },
-                                    en: Pos {
-                                        column: self.peek_span().en.column,
-                                        line: self.peek_span().en.line,
-                                    },
-                                    file: self.file.clone(),
-                                },
-                            })),
+                                });
+
+                                TypeSpec {
+                                    hint: TypeHint::Bool,
+                                    span: self.zero_span.clone(),
+                                }
+                            }
                         }
                     }
                     Some(oth) => {
                         if s == _u8 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::U8(None),
                                 span,
-                            })
+                            }
                         } else if s == _u16 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::U16(None),
                                 span,
-                            })
+                            }
                         } else if s == _u32 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::U32(None),
                                 span,
-                            })
+                            }
                         } else if s == _u64 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::U64(None),
                                 span,
-                            })
+                            }
                         } else if s == _u128 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::U128(None),
                                 span,
-                            })
+                            }
                         } else if s == _usize {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::USize(None),
                                 span,
-                            })
+                            }
                         } else if s == _i8 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::I8(None),
                                 span,
-                            })
+                            }
                         } else if s == _i16 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::I16(None),
                                 span,
-                            })
+                            }
                         } else if s == _i32 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::I32(None),
                                 span,
-                            })
+                            }
                         } else if s == _i64 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::I64(None),
                                 span,
-                            })
+                            }
                         } else if s == _i128 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::I128(None),
                                 span,
-                            })
+                            }
                         } else if s == _isize {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::ISize(None),
                                 span,
-                            })
+                            }
                         } else if s == _f32 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::F32(None),
                                 span,
-                            })
+                            }
                         } else if s == _f64 {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::F64(None),
                                 span,
-                            })
+                            }
                         } else if s == _str {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::Str,
                                 span,
-                            })
+                            }
                         } else if s == _char {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::Char,
                                 span,
-                            })
+                            }
                         } else if s == _bool {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::Bool,
                                 span,
-                            })
+                            }
                         } else if s == _trinary {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::Trinary,
                                 span,
-                            })
+                            }
                         } else if s == _quaternary {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::Quaternary,
                                 span,
-                            })
+                            }
                         } else if s == _end {
-                            Ok(TypeSpec {
+                            TypeSpec {
                                 hint: TypeHint::End,
                                 span,
-                            })
+                            }
                         }
                         // else if s == _void {
                         //     println!("Next>>> {:#?}", self.peek_kind());
@@ -1706,47 +1728,57 @@ impl Parser {
                         //     })
                         // }
                         else {
-                            Err(
-                                self.errs.push(Error{
-                                    message: format!("Irú ẹṣà ni oó yẹ kí oó wà nípò yìí, dípò, '{:?}' ni oó wà níbẹ̀", oth),
-                                    span: Span {
-                                        st: Pos {
-                                            column: self.peek_span().st.column,
-                                            line: self.peek_span().st.line
-                                        },
-                                        en: Pos {
-                                            column: self.peek_span().en.column,
-                                            line: self.peek_span().en.line
-                                        },
-                                        file: self.file.clone()
-                                    }
-                                })
-                            )
+                            self.errs.push(Error{
+                                message: format!("Irú ẹṣà ni oó yẹ kí oó wà nípò yìí, dípò, '{:?}' ni oó wà níbẹ̀", oth),
+                                span: Span {
+                                    st: Pos {
+                                        column: self.peek_span().st.column,
+                                        line: self.peek_span().st.line
+                                    },
+                                    en: Pos {
+                                        column: self.peek_span().en.column,
+                                        line: self.peek_span().en.line
+                                    },
+                                    file: self.file.clone()
+                                }
+                            });
+
+                            TypeSpec {
+                                hint: TypeHint::Bool,
+                                span: self.zero_span.clone(),
+                            }
                         }
                     }
-                    None => Err(self.errs.push(Error {
-                        message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
-                        span: Span {
-                            st: Pos {
-                                column: self.peek_span().st.column,
-                                line: self.peek_span().st.line,
+                    None => {
+                        self.errs.push(Error {
+                            message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
+                            span: Span {
+                                st: Pos {
+                                    column: self.peek_span().st.column,
+                                    line: self.peek_span().st.line,
+                                },
+                                en: Pos {
+                                    column: self.peek_span().en.column,
+                                    line: self.peek_span().en.line,
+                                },
+                                file: self.file.clone(),
                             },
-                            en: Pos {
-                                column: self.peek_span().en.column,
-                                line: self.peek_span().en.line,
-                            },
-                            file: self.file.clone(),
-                        },
-                    })),
+                        });
+
+                        TypeSpec {
+                            hint: TypeHint::Bool,
+                            span: self.zero_span.clone(),
+                        }
+                    }
                 }
             }
             Some(FullTok {
                 kind: Token::Void,
                 span,
-            }) => Ok(TypeSpec {
+            }) => TypeSpec {
                 hint: TypeHint::Void,
                 span,
-            }),
+            },
             // Handles custom types
             Some(FullTok {
                 kind: Token::Identifier(c_ident),
@@ -1779,7 +1811,7 @@ impl Parser {
                                     kind: Token::Identifier(_),
                                     span: _,
                                 }) => {
-                                    mod_path = ModPath::Ident(self.expect_ident()?);
+                                    mod_path = ModPath::Ident(self.expect_ident());
                                 }
                                 Some(FullTok {
                                     kind: Token::StringLiteral(strlit),
@@ -1847,7 +1879,7 @@ impl Parser {
                     },
                 };
                 if import.is_some() {
-                    cust = self.expect_ident()?;
+                    cust = self.expect_ident();
                 }
 
                 let generics;
@@ -1859,7 +1891,7 @@ impl Parser {
                         let mut list = vec![];
 
                         while self.peek_kind() != Some(Token::Greater) {
-                            list.push(self.expect_typespec()?);
+                            list.push(self.expect_typespec());
 
                             if self.peek_kind() == Some(Token::Comma) {
                                 self.advance();
@@ -1868,7 +1900,7 @@ impl Parser {
                                 break;
                             } else {
                                 let kind = self.peek_kind();
-                                return Err(self.errs.push(Error {
+                                self.errs.push(Error {
                                     message: format!(
                                         "'{:?}' kọ́ ni oó yẹ kí oó wà níbí. Lo ',' dípò",
                                         kind
@@ -1884,7 +1916,7 @@ impl Parser {
                                         },
                                         file: self.file.clone(),
                                     },
-                                }));
+                                });
                             }
                         }
                         generics = list;
@@ -1896,7 +1928,7 @@ impl Parser {
                 let genrics_en = self.peek_span().en.clone();
 
                 if import.is_some() {
-                    Ok(TypeSpec {
+                    TypeSpec {
                         hint: TypeHint::Custom {
                             import,
                             ident: cust,
@@ -1907,9 +1939,9 @@ impl Parser {
                             en: genrics_en,
                             file: self.file.clone(),
                         },
-                    })
+                    }
                 } else {
-                    Ok(TypeSpec {
+                    TypeSpec {
                         hint: TypeHint::Custom {
                             import,
                             ident: name,
@@ -1920,7 +1952,7 @@ impl Parser {
                             en: genrics_en,
                             file: self.file.clone(),
                         },
-                    })
+                    }
                 }
             }
             Some(FullTok {
@@ -1941,9 +1973,9 @@ impl Parser {
                     }
                 }
 
-                let spec = self.expect_typespec()?;
+                let spec = self.expect_typespec();
                 match &spec {
-                    TypeSpec { hint: _, span } => Ok(TypeSpec {
+                    TypeSpec { hint: _, span } => TypeSpec {
                         hint: TypeHint::RawPtr {
                             tysp: Box::new(spec.clone()),
                             mutb,
@@ -1953,51 +1985,65 @@ impl Parser {
                             en: span.en.clone(),
                             file: self.file.clone(),
                         },
-                    }),
+                    },
                 }
             }
             Some(FullTok {
                 kind: Token::SelfKw,
                 span,
-            }) => Ok(TypeSpec {
+            }) => TypeSpec {
                 hint: TypeHint::SelfKw,
                 span,
-            }),
-            Some(oth) => Err(self.errs.push(Error {
-                message: format!(
-                    "Irú ẹṣà ni oó yẹ kí oó wà nípò yìí, dípò, '{:?}' ni oó wà níbẹ̀",
-                    oth.kind
-                ),
-                span: Span {
-                    st: Pos {
-                        column: self.peek_span().st.column,
-                        line: self.peek_span().st.line,
+            },
+            Some(oth) => {
+                self.errs.push(Error {
+                    message: format!(
+                        "Irú ẹṣà ni oó yẹ kí oó wà nípò yìí, dípò, '{:?}' ni oó wà níbẹ̀",
+                        oth.kind
+                    ),
+                    span: Span {
+                        st: Pos {
+                            column: self.peek_span().st.column,
+                            line: self.peek_span().st.line,
+                        },
+                        en: Pos {
+                            column: self.peek_span().en.column,
+                            line: self.peek_span().en.line,
+                        },
+                        file: self.file.clone(),
                     },
-                    en: Pos {
-                        column: self.peek_span().en.column,
-                        line: self.peek_span().en.line,
+                });
+
+                TypeSpec {
+                    hint: TypeHint::Bool,
+                    span: self.zero_span.clone(),
+                }
+            }
+            None => {
+                self.errs.push(Error {
+                    message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
+                    span: Span {
+                        st: Pos {
+                            column: self.peek_span().st.column,
+                            line: self.peek_span().st.line,
+                        },
+                        en: Pos {
+                            column: self.peek_span().en.column,
+                            line: self.peek_span().en.line,
+                        },
+                        file: self.file.clone(),
                     },
-                    file: self.file.clone(),
-                },
-            })),
-            None => Err(self.errs.push(Error {
-                message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
-                span: Span {
-                    st: Pos {
-                        column: self.peek_span().st.column,
-                        line: self.peek_span().st.line,
-                    },
-                    en: Pos {
-                        column: self.peek_span().en.column,
-                        line: self.peek_span().en.line,
-                    },
-                    file: self.file.clone(),
-                },
-            })),
+                });
+
+                TypeSpec {
+                    hint: TypeHint::Bool,
+                    span: self.zero_span.clone(),
+                }
+            }
         }
     }
 
-    fn expect_param(&mut self) -> Result<Parameter, ()> {
+    fn expect_param(&mut self) -> Parameter {
         let mut state = DataState::Owner;
         if self.peek_kind() == Some(Token::Ampersand) {
             self.advance();
@@ -2009,11 +2055,11 @@ impl Parser {
             }
         }
 
-        let ty = self.expect_typespec()?;
+        let ty = self.expect_typespec();
 
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
-        Ok(Parameter { ident, state, ty })
+        Parameter { ident, state, ty }
     }
 
     fn consume_newlines(&mut self) {
@@ -2201,66 +2247,73 @@ impl Parser {
         while !self.is_eof() {
             let result = self.parse_toplevel(false);
 
-            if let Ok(value) = result {
-                if self.errs.is_empty() {
-                    // No need to push anymore if not empty
-                    match value.clone() {
-                        TopLevel::DocLines { .. } => {
-                            mod_docs = Some(value);
-                        }
-                        TopLevel::UseStmt {
+            if self.errs.is_empty() {
+                match result.clone() {
+                    TopLevel::DocLines { .. } => {
+                        mod_docs = Some(result);
+                    }
+                    TopLevel::UseStmt {
+                        module,
+                        nexted_level,
+                        as_,
+                        is_public,
+                        info,
+                    } => {
+                        mods.push(TopLevel::UseStmt {
                             module,
                             nexted_level,
                             as_,
                             is_public,
                             info,
-                        } => {
-                            mods.push(TopLevel::UseStmt {
-                                module,
-                                nexted_level,
-                                as_,
-                                is_public,
-                                info,
-                            });
-                        }
-                        TopLevel::UseLibStmt { module, info } => {
-                            mods.push(TopLevel::UseLibStmt { module, info });
-                        }
-                        TopLevel::MultiTakeStmt {
-                            take,
-                            from,
-                            lib,
-                            info,
-                        } => {
-                            // converts the multiple takes into individual takes
+                        });
+                    }
+                    TopLevel::UseLibStmt { module, info } => {
+                        mods.push(TopLevel::UseLibStmt { module, info });
+                    }
+                    TopLevel::MultiTakeStmt {
+                        take,
+                        from,
+                        lib,
+                        info,
+                    } => {
+                        // converts the multiple takes into individual takes
 
-                            for t in take {
-                                takes.push(TopLevel::TakeStmt {
-                                    take: t,
-                                    from: from.clone(),
-                                    lib: lib.clone(),
-                                    info: info.clone(),
-                                });
-                            }
+                        for t in take {
+                            takes.push(TopLevel::TakeStmt {
+                                take: t,
+                                from: from.clone(),
+                                lib: lib.clone(),
+                                info: info.clone(),
+                            });
                         }
-                        TopLevel::TakeStmt {
+                    }
+                    TopLevel::TakeStmt {
+                        take,
+                        from,
+                        lib,
+                        info,
+                    } => {
+                        takes.push(TopLevel::TakeStmt {
                             take,
                             from,
                             lib,
                             info,
-                        } => {
-                            takes.push(TopLevel::TakeStmt {
-                                take,
-                                from,
-                                lib,
-                                info,
-                            });
-                        }
-                        TopLevel::WorkerUsage { workers, info } => {
-                            self.worker_usages = // this field is checked for every statement being parsed
+                        });
+                    }
+                    TopLevel::WorkerUsage { workers, info } => {
+                        self.worker_usages = // this field is checked for every statement being parsed
                                 Some(TopLevel::WorkerUsage { workers, info });
-                        }
-                        TopLevel::GlobalDecl {
+                    }
+                    TopLevel::GlobalDecl {
+                        interpret,
+                        state,
+                        ty,
+                        name,
+                        value,
+                        public,
+                        info,
+                    } => {
+                        globals.push(TopLevel::GlobalDecl {
                             interpret,
                             state,
                             ty,
@@ -2268,39 +2321,44 @@ impl Parser {
                             value,
                             public,
                             info,
-                        } => {
-                            globals.push(TopLevel::GlobalDecl {
-                                interpret,
-                                state,
-                                ty,
-                                name,
-                                value,
-                                public,
-                                info,
-                            });
+                        });
+                    }
+                    TopLevel::MultiGlobalDecl(v) => {
+                        for each in v {
+                            let glob = *each;
+                            globals.push(glob);
                         }
-                        TopLevel::MultiGlobalDecl(v) => {
-                            for each in v {
-                                let glob = *each;
-                                globals.push(glob);
-                            }
-                        }
-                        TopLevel::Entry {
+                    }
+                    TopLevel::Entry {
+                        ident,
+                        expect,
+                        worker_usage,
+                        block,
+                        info,
+                    } => {
+                        main_fn = Some(TopLevel::Entry {
                             ident,
                             expect,
                             worker_usage,
                             block,
                             info,
-                        } => {
-                            main_fn = Some(TopLevel::Entry {
-                                ident,
-                                expect,
-                                worker_usage,
-                                block,
-                                info,
-                            });
-                        }
-                        TopLevel::FuncDecl {
+                        });
+                    }
+                    TopLevel::FuncDecl {
+                        is_async,
+                        expect,
+                        ret_state,
+                        ident,
+                        generics,
+                        is_visible,
+                        is_public,
+                        is_extern,
+                        par,
+                        worker_usage,
+                        block,
+                        info,
+                    } => {
+                        funcs.push(TopLevel::FuncDecl {
                             is_async,
                             expect,
                             ret_state,
@@ -2313,39 +2371,35 @@ impl Parser {
                             worker_usage,
                             block,
                             info,
-                        } => {
-                            funcs.push(TopLevel::FuncDecl {
-                                is_async,
-                                expect,
-                                ret_state,
-                                ident,
-                                generics,
-                                is_visible,
-                                is_public,
-                                is_extern,
-                                par,
-                                worker_usage,
-                                block,
-                                info,
-                            });
-                        }
-                        TopLevel::PlatformNS { arms, info } => {
-                            platform_n_s.push(TopLevel::PlatformNS { arms, info })
-                        }
-                        TopLevel::MacroDef {
+                        });
+                    }
+                    TopLevel::PlatformNS { arms, info } => {
+                        platform_n_s.push(TopLevel::PlatformNS { arms, info })
+                    }
+                    TopLevel::MacroDef {
+                        ident,
+                        is_public,
+                        cases,
+                        info,
+                    } => {
+                        macro_def.push(TopLevel::MacroDef {
                             ident,
                             is_public,
                             cases,
                             info,
-                        } => {
-                            macro_def.push(TopLevel::MacroDef {
-                                ident,
-                                is_public,
-                                cases,
-                                info,
-                            });
-                        }
-                        TopLevel::EnumDecl {
+                        });
+                    }
+                    TopLevel::EnumDecl {
+                        ident,
+                        generic_types,
+                        vals,
+                        traits,
+                        public,
+                        associateds,
+                        bridges,
+                        info,
+                    } => {
+                        custom_tys.push(TopLevel::EnumDecl {
                             ident,
                             generic_types,
                             vals,
@@ -2354,19 +2408,19 @@ impl Parser {
                             associateds,
                             bridges,
                             info,
-                        } => {
-                            custom_tys.push(TopLevel::EnumDecl {
-                                ident,
-                                generic_types,
-                                vals,
-                                traits,
-                                public,
-                                associateds,
-                                bridges,
-                                info,
-                            });
-                        }
-                        TopLevel::StructDecl {
+                        });
+                    }
+                    TopLevel::StructDecl {
+                        ident,
+                        generic_types,
+                        vals,
+                        traits,
+                        public,
+                        associateds,
+                        bridges,
+                        info,
+                    } => {
+                        custom_tys.push(TopLevel::StructDecl {
                             ident,
                             generic_types,
                             vals,
@@ -2375,72 +2429,59 @@ impl Parser {
                             associateds,
                             bridges,
                             info,
-                        } => {
-                            custom_tys.push(TopLevel::StructDecl {
-                                ident,
-                                generic_types,
-                                vals,
-                                traits,
-                                public,
-                                associateds,
-                                bridges,
-                                info,
-                            });
-                        }
-                        TopLevel::GenericType { name: _, traits: _ } => (), // Non used in parser
-                        TopLevel::TraitDef {
+                        });
+                    }
+                    TopLevel::GenericType { name: _, traits: _ } => (), // Non used in parser
+                    TopLevel::TraitDef {
+                        ident,
+                        generic_types,
+                        interprets,
+                        methods,
+                        is_public,
+                        info,
+                    } => {
+                        traits.push(TopLevel::TraitDef {
                             ident,
                             generic_types,
                             interprets,
                             methods,
                             is_public,
                             info,
-                        } => {
-                            traits.push(TopLevel::TraitDef {
-                                ident,
-                                generic_types,
-                                interprets,
-                                methods,
-                                is_public,
-                                info,
-                            });
-                        }
-                        TopLevel::WorkerDef {
+                        });
+                    }
+                    TopLevel::WorkerDef {
+                        ident,
+                        func_name,
+                        public,
+                        block,
+                        info,
+                    } => {
+                        workers.push(TopLevel::WorkerDef {
                             ident,
                             func_name,
                             public,
                             block,
                             info,
-                        } => {
-                            workers.push(TopLevel::WorkerDef {
-                                ident,
-                                func_name,
-                                public,
-                                block,
-                                info,
-                            });
-                        }
-                        TopLevel::StaticDef {
+                        });
+                    }
+                    TopLevel::StaticDef {
+                        ident,
+                        public,
+                        block,
+                        info,
+                    } => {
+                        let static_def = TopLevel::StaticDef {
                             ident,
                             public,
                             block,
                             info,
-                        } => {
-                            let static_def = TopLevel::StaticDef {
-                                ident,
-                                public,
-                                block,
-                                info,
-                            };
-                            statics.push(static_def);
-                        } // TopLevel::Foo => ()
-                          // _ => {
-                          //     items.push(value);
-                          // }
+                        };
+                        statics.push(static_def);
                     }
+                    TopLevel::Foo => (), //   _ => {
+                                         //       items.push(value);
+                                         //   }
                 }
-            } else if let Err(_) = result {
-                self.advance(); // The useStatement error needs to reverse because of this
             }
         }
 
@@ -2514,13 +2555,13 @@ impl Parser {
         }
     }
 
-    pub fn parse_stmts(&mut self) -> Result<(Vec<BlockLevel>, Pos), ()> {
+    pub fn parse_stmts(&mut self) -> (Vec<BlockLevel>, Pos) {
         let mut items = vec![];
 
         // self.expect(&Token::LBrace);
 
         while self.peek_kind() != Some(Token::RBrace) {
-            let value = self.parse_blocklevel()?;
+            let value = self.parse_blocklevel();
 
             match value.clone() {
                 BlockLevel::MultiGlobalDecl(g) => {
@@ -2737,133 +2778,149 @@ impl Parser {
         self.expect(&Token::RBrace);
         // comsume the ending only if it's not a switch case block
 
-        Ok((items, stm_en))
+        (items, stm_en)
     }
 
-    fn parse_toplevel(&mut self, is_platform: bool) -> Result<TopLevel, ()> {
+    fn parse_toplevel(&mut self, is_platform: bool) -> TopLevel {
         match self.peek() {
             Some(FullTok {
                 kind: Token::DocLines(_),
                 span: _,
-            }) => Ok(self.parse_mod_docs()?),
+            }) => self.parse_mod_docs(),
             Some(FullTok {
                 kind: Token::Target,
                 span: _,
-            }) => Ok(self.parse_platform()?),
+            }) => self.parse_platform(),
             Some(FullTok {
                 kind: Token::Use,
                 span: _,
-            }) => Ok(self.parse_use()?),
+            }) => self.parse_use(),
             Some(FullTok {
                 kind: Token::Take,
                 span: _,
-            }) => Ok(self.parse_take()?),
+            }) => self.parse_take(),
             Some(FullTok {
                 kind: Token::Global,
                 span: _,
-            }) => Ok(self.parse_global()?),
+            }) => self.parse_global(),
             Some(FullTok {
                 kind: Token::Bridge,
                 span: _,
-            }) => Ok(self.parse_bridge()?), // Always returns Err()
+            }) => self.parse_bridge(),
             Some(FullTok {
                 kind: Token::Enum,
                 span: _,
-            }) => Ok(self.parse_enum()?),
+            }) => self.parse_enum(),
             Some(FullTok {
                 kind: Token::Struct,
                 span: _,
-            }) => Ok(self.parse_struct()?),
+            }) => self.parse_struct(),
             Some(FullTok {
                 kind: Token::Async,
                 span: _,
-            }) => Ok(self.parse_func(is_platform)?),
+            }) => self.parse_func(is_platform),
             Some(FullTok {
                 kind: Token::Function,
                 span: _,
-            }) => Ok(self.parse_func(is_platform)?),
+            }) => self.parse_func(is_platform),
             Some(FullTok {
                 kind: Token::Interpret,
                 span: _,
-            }) => Ok(self.parse_global()?),
+            }) => self.parse_global(),
             Some(FullTok {
                 kind: Token::Worker,
                 span: _,
-            }) => Ok(self.parse_worker()?),
+            }) => self.parse_worker(),
             Some(FullTok {
                 kind: Token::Static,
                 span: _,
-            }) => Ok(self.parse_static()?),
+            }) => self.parse_static(),
             Some(FullTok {
                 kind: Token::Trait,
                 span: _,
-            }) => Ok(self.parse_trait()?),
+            }) => self.parse_trait(),
             Some(FullTok {
                 kind: Token::NumSign,
                 span: _,
-            }) => Ok(self.parse_worker_usage()?),
+            }) => self.parse_worker_usage(),
             Some(FullTok {
                 kind: Token::Macro,
                 span: _,
-            }) => Ok(self.parse_macro()?),
+            }) => self.parse_macro(),
             Some(oth) => match &oth.kind {
-                Token::Identifier(i) => Err(self.errs.push(Error {
-                    message: format!("Ident '{}'-ò yẹ kí oó wà níbí", i),
-                    span: Span {
-                        st: Pos {
-                            column: self.peek_span().st.column,
-                            line: self.peek_span().st.line,
+                Token::Identifier(i) => {
+                    self.errs.push(Error {
+                        message: format!("Ident '{}'-ò yẹ kí oó wà níbí", i),
+                        span: Span {
+                            st: Pos {
+                                column: self.peek_span().st.column,
+                                line: self.peek_span().st.line,
+                            },
+                            en: Pos {
+                                column: self.peek_span().en.column,
+                                line: self.peek_span().en.line,
+                            },
+                            file: self.file.clone(),
                         },
-                        en: Pos {
-                            column: self.peek_span().en.column,
-                            line: self.peek_span().en.line,
+                    });
+
+                    TopLevel::Foo
+                }
+                Token::TypeHint(t) => {
+                    self.errs.push(Error {
+                        message: format!("Irú ẹṣà '{}'-ò yẹ kí oó wà níbí", t),
+                        span: Span {
+                            st: Pos {
+                                column: self.peek_span().st.column,
+                                line: self.peek_span().st.line,
+                            },
+                            en: Pos {
+                                column: self.peek_span().en.column,
+                                line: self.peek_span().en.line,
+                            },
+                            file: self.file.clone(),
                         },
-                        file: self.file.clone(),
-                    },
-                })),
-                Token::TypeHint(t) => Err(self.errs.push(Error {
-                    message: format!("Irú ẹṣà '{}'-ò yẹ kí oó wà níbí", t),
-                    span: Span {
-                        st: Pos {
-                            column: self.peek_span().st.column,
-                            line: self.peek_span().st.line,
+                    });
+
+                    TopLevel::Foo
+                }
+                oth => {
+                    self.errs.push(Error {
+                        message: format!("'{:?}'-ò yẹ kí oó wà níbí", oth),
+                        span: Span {
+                            st: Pos {
+                                column: self.peek_span().st.column,
+                                line: self.peek_span().st.line,
+                            },
+                            en: Pos {
+                                column: self.peek_span().en.column,
+                                line: self.peek_span().en.line,
+                            },
+                            file: self.file.clone(),
                         },
-                        en: Pos {
-                            column: self.peek_span().en.column,
-                            line: self.peek_span().en.line,
-                        },
-                        file: self.file.clone(),
-                    },
-                })),
-                oth => Err(self.errs.push(Error {
-                    message: format!("'{:?}'-ò yẹ kí oó wà níbí", oth),
-                    span: Span {
-                        st: Pos {
-                            column: self.peek_span().st.column,
-                            line: self.peek_span().st.line,
-                        },
-                        en: Pos {
-                            column: self.peek_span().en.column,
-                            line: self.peek_span().en.line,
-                        },
-                        file: self.file.clone(),
-                    },
-                })),
+                    });
+
+                    TopLevel::Foo
+                }
             },
-            None => Err(self.errs.push(Error {
-                message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
-                span: Span {
-                    st: Pos {
-                        column: self.peek_span().st.column,
-                        line: self.peek_span().st.line,
+            None => {
+                self.errs.push(Error {
+                    message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
+                    span: Span {
+                        st: Pos {
+                            column: self.peek_span().st.column,
+                            line: self.peek_span().st.line,
+                        },
+                        en: Pos {
+                            column: self.peek_span().en.column,
+                            line: self.peek_span().en.line,
+                        },
+                        file: self.file.clone(),
                     },
-                    en: Pos {
-                        column: self.peek_span().en.column,
-                        line: self.peek_span().en.line,
-                    },
-                    file: self.file.clone(),
-                },
-            })),
+                });
+                
+                TopLevel::Foo
+            },
         }
     }
 
@@ -2877,13 +2934,13 @@ impl Parser {
         }
     }
 
-    fn parse_blocklevel(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_blocklevel(&mut self) -> BlockLevel {
         match self.peek() {
             Some(FullTok {
                 kind: Token::Take,
                 span: _,
             }) => {
-                let top_level_take = self.parse_take()?;
+                let top_level_take = self.parse_take();
 
                 match top_level_take {
                     TopLevel::TakeStmt {
@@ -2891,13 +2948,13 @@ impl Parser {
                         from,
                         lib,
                         info,
-                    } => Ok(BlockLevel::TakeStmt {
+                    } => BlockLevel::TakeStmt {
                         take,
                         from,
                         lib,
                         info,
-                    }),
-                    _ => Err(()),
+                    },
+                    _ => BlockLevel::Foo,
                 }
             }
             // Some(FullTok {
@@ -2907,67 +2964,67 @@ impl Parser {
             Some(FullTok {
                 kind: Token::If,
                 span: _,
-            }) => Ok(self.parse_if()?),
+            }) => self.parse_if(),
             Some(FullTok {
                 kind: Token::For,
                 span: _,
-            }) => Ok(self.parse_for()?),
+            }) => self.parse_for(),
             Some(FullTok {
                 kind: Token::Peeking,
                 span: _,
-            }) => Ok(self.parse_peeking()?),
+            }) => self.parse_peeking(),
             Some(FullTok {
                 kind: Token::Var,
                 span: _,
-            }) => Ok(self.parse_var()?),
+            }) => self.parse_var(),
             Some(FullTok {
                 kind: Token::Have,
                 span: _,
-            }) => Ok(self.parse_uninit_var()?),
+            }) => self.parse_uninit_var(),
             Some(FullTok {
                 kind: Token::Assign,
                 span: _,
-            }) => Ok(self.parse_reassign()?),
+            }) => self.parse_reassign(),
             Some(FullTok {
                 kind: Token::Function,
                 span: _,
-            }) => Ok(self.parse_nexted_func()?),
+            }) => self.parse_nexted_func(),
             Some(FullTok {
                 kind: Token::Tilde,
                 span: _,
-            }) => Ok(self.parse_func_call()?),
+            }) => self.parse_func_call(),
             Some(FullTok {
                 kind: Token::Loop,
                 span: _,
-            }) => Ok(self.parse_loop()?),
+            }) => self.parse_loop(),
             Some(FullTok {
                 kind: Token::While,
                 span: _,
-            }) => Ok(self.parse_while()?),
+            }) => self.parse_while(),
             Some(FullTok {
                 kind: Token::Match,
                 span: _,
-            }) => Ok(self.parse_match()?),
+            }) => self.parse_match(),
             Some(FullTok {
                 kind: Token::Interpret,
                 span: _,
-            }) => Ok(self.parse_var()?),
+            }) => self.parse_var(),
             Some(FullTok {
                 kind: Token::Do,
                 span: _,
-            }) => Ok(self.parse_do_while()?),
+            }) => self.parse_do_while(),
             Some(FullTok {
                 kind: Token::Colon,
                 span: _,
-            }) => Ok(self.parse_expr_call_or_var_init()?),
+            }) => self.parse_expr_call_or_var_init(),
             Some(FullTok {
                 kind: Token::RBrace,
                 span: _,
-            }) => Ok(self.parse_block()?),
+            }) => self.parse_block(),
             Some(FullTok {
                 kind: Token::Identifier(_),
                 span: _,
-            }) => Ok(self.parse_var_init()?),
+            }) => self.parse_var_init(),
             Some(FullTok {
                 kind: Token::Break,
                 span: _,
@@ -2976,15 +3033,15 @@ impl Parser {
                 self.advance();
                 let en = self.peek_span().en.clone();
 
-                let docs = self.end_stmt_parse(false)?;
-                Ok(BlockLevel::Break(StmtInfo {
+                let docs = self.end_stmt_parse(false);
+                BlockLevel::Break(StmtInfo {
                     span: Span {
                         st,
                         en,
                         file: self.file.clone(),
                     },
                     docs,
-                }))
+                })
             }
             Some(FullTok {
                 kind: Token::Continue,
@@ -2994,15 +3051,15 @@ impl Parser {
                 self.advance();
                 let en = self.peek_span().en.clone();
 
-                let docs = self.end_stmt_parse(false)?;
-                Ok(BlockLevel::Continue(StmtInfo {
+                let docs = self.end_stmt_parse(false);
+                BlockLevel::Continue(StmtInfo {
                     span: Span {
                         st,
                         en,
                         file: self.file.clone(),
                     },
                     docs,
-                }))
+                })
             }
             Some(FullTok {
                 kind: Token::FlowThrough,
@@ -3012,16 +3069,16 @@ impl Parser {
                 self.advance();
                 let en = self.peek_span().en.clone();
 
-                let docs = self.end_stmt_parse(false)?;
+                let docs = self.end_stmt_parse(false);
 
-                Ok(BlockLevel::FlowThrough(StmtInfo {
+                BlockLevel::FlowThrough(StmtInfo {
                     span: Span {
                         st,
                         en,
                         file: self.file.clone(),
                     },
                     docs,
-                }))
+                })
             }
             Some(FullTok {
                 kind: Token::Return,
@@ -3031,16 +3088,16 @@ impl Parser {
                 self.advance();
                 let en = self.peek_span().en.clone();
 
-                let docs = self.end_stmt_parse(false)?;
+                let docs = self.end_stmt_parse(false);
 
-                Ok(BlockLevel::Return(StmtInfo {
+                BlockLevel::Return(StmtInfo {
                     span: Span {
                         st,
                         en,
                         file: self.file.clone(),
                     },
                     docs,
-                }))
+                })
             }
             Some(FullTok {
                 kind: Token::RetVal,
@@ -3049,12 +3106,12 @@ impl Parser {
                 let st = span.st.clone();
                 self.advance();
 
-                let expr = self.parse_expr(0, false)?;
+                let expr = self.parse_expr(0, false);
                 let en = self.peek_span().en.clone();
 
-                let docs = self.end_stmt_parse(self.is_expr_block(&expr))?;
+                let docs = self.end_stmt_parse(self.is_expr_block(&expr));
 
-                Ok(BlockLevel::RetVal {
+                BlockLevel::RetVal {
                     expr,
                     info: StmtInfo {
                         span: Span {
@@ -3064,43 +3121,51 @@ impl Parser {
                         },
                         docs,
                     },
-                })
+                }
             }
-            Some(oth) => Err(self.errs.push(Error {
-                message: format!(
-                    "'{:?}' kọ́ ni oó yẹ kí oó wà níbí\n bóyá kí o fi ':' sí wájú rẹ",
-                    oth.kind
-                ),
-                span: Span {
-                    st: Pos {
-                        column: self.peek_span().st.column,
-                        line: self.peek_span().st.line,
+            Some(oth) => {
+                self.errs.push(Error {
+                    message: format!(
+                        "'{:?}' kọ́ ni oó yẹ kí oó wà níbí\n bóyá kí o fi ':' sí wájú rẹ",
+                        oth.kind
+                    ),
+                    span: Span {
+                        st: Pos {
+                            column: self.peek_span().st.column,
+                            line: self.peek_span().st.line,
+                        },
+                        en: Pos {
+                            column: self.peek_span().en.column,
+                            line: self.peek_span().en.line,
+                        },
+                        file: self.file.clone(),
                     },
-                    en: Pos {
-                        column: self.peek_span().en.column,
-                        line: self.peek_span().en.line,
+                });
+
+                BlockLevel::Foo
+            }
+            None => {
+                self.errs.push(Error {
+                    message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
+                    span: Span {
+                        st: Pos {
+                            column: self.peek_span().st.column,
+                            line: self.peek_span().st.line,
+                        },
+                        en: Pos {
+                            column: self.peek_span().en.column,
+                            line: self.peek_span().en.line,
+                        },
+                        file: self.file.clone(),
                     },
-                    file: self.file.clone(),
-                },
-            })),
-            None => Err(self.errs.push(Error {
-                message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
-                span: Span {
-                    st: Pos {
-                        column: self.peek_span().st.column,
-                        line: self.peek_span().st.line,
-                    },
-                    en: Pos {
-                        column: self.peek_span().en.column,
-                        line: self.peek_span().en.line,
-                    },
-                    file: self.file.clone(),
-                },
-            })),
+                });
+
+                BlockLevel::Foo
+            }
         }
     }
 
-    fn end_stmt_parse(&mut self, is_block_ending: bool) -> Result<Vec<String>, ()> {
+    fn end_stmt_parse(&mut self, is_block_ending: bool) -> Vec<String> {
         let mut docs = vec![];
 
         while let Some(Token::LineDoc(strg)) = self.peek_kind() {
@@ -3117,7 +3182,7 @@ impl Parser {
             }
         }
 
-        Ok(docs)
+        docs
     }
 
     // fn parse_mod_pub(&mut self) -> Result<TopLevel, ()> {
@@ -3141,27 +3206,31 @@ impl Parser {
     //     })
     // }
 
-    fn parse_mod_docs(&mut self) -> Result<TopLevel, ()> {
+    fn parse_mod_docs(&mut self) -> TopLevel {
         let mod_docs = self.advance();
         if mod_docs.is_some() {
             let mod_docs = mod_docs.unwrap();
             match mod_docs.kind {
-                Token::DocLines(docs) => Ok(TopLevel::DocLines {
+                Token::DocLines(docs) => TopLevel::DocLines {
                     lines: docs.clone(),
                     span: mod_docs.span,
-                }),
-                _ => Err(self.errs.push(Error {
-                    message: format!("Unexpected Expression for Module documentation"),
-                    span: mod_docs.span,
-                })),
+                },
+                _ => {
+                    self.errs.push(Error {
+                        message: format!("Unexpected Expression for Module documentation"),
+                        span: mod_docs.span,
+                    });
+
+                    TopLevel::Foo
+                }
             }
         } else {
-            Err(())
+            TopLevel::Foo
         }
     }
 
     // --- Use Module ---
-    fn parse_use(&mut self) -> Result<TopLevel, ()> {
+    fn parse_use(&mut self) -> TopLevel {
         let stm_st = self.init_stm(&Token::Use).1;
 
         match self.advance() {
@@ -3173,7 +3242,6 @@ impl Parser {
                     ident: mod_str,
                     span: mod_span,
                 };
-
 
                 let mut nexted_level = LibNextedLevel::To(0);
                 if self.peek_kind() == Some(Token::DDot) {
@@ -3191,7 +3259,7 @@ impl Parser {
 
                 self.expect(&Token::Colon);
 
-                let ident = self.expect_ident()?;
+                let ident = self.expect_ident();
                 let as_ = ident.ident;
 
                 let mut is_public = false;
@@ -3202,8 +3270,8 @@ impl Parser {
 
                 let stm_en = ident.span.en;
 
-                let docs = self.end_stmt_parse(false)?;
-                Ok(TopLevel::UseStmt {
+                let docs = self.end_stmt_parse(false);
+                TopLevel::UseStmt {
                     module,
                     nexted_level,
                     as_,
@@ -3216,7 +3284,7 @@ impl Parser {
                         },
                         docs,
                     },
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::Identifier(mod_ident),
@@ -3227,8 +3295,9 @@ impl Parser {
                     span: mod_span.clone(),
                 };
 
-                let docs = self.end_stmt_parse(false)?;
-                Ok(TopLevel::UseLibStmt {
+                let docs = self.end_stmt_parse(false);
+
+                TopLevel::UseLibStmt {
                     module,
                     info: StmtInfo {
                         span: Span {
@@ -3238,22 +3307,26 @@ impl Parser {
                         },
                         docs,
                     },
-                })
+                }
             }
-            _ => Err(self.errs.push(Error {
-                message: format!("Ipa fáílì náà gbodọ̀ wa nínu \" \""),
-                span: Span {
-                    st: Pos {
-                        column: self.peek_span().st.column,
-                        line: self.peek_span().st.line,
+            _ => {
+                self.errs.push(Error {
+                    message: format!("Ipa fáílì náà gbodọ̀ wa nínu \" \""),
+                    span: Span {
+                        st: Pos {
+                            column: self.peek_span().st.column,
+                            line: self.peek_span().st.line,
+                        },
+                        en: Pos {
+                            column: self.peek_span().en.column,
+                            line: self.peek_span().en.line,
+                        },
+                        file: self.file.clone(),
                     },
-                    en: Pos {
-                        column: self.peek_span().en.column,
-                        line: self.peek_span().en.line,
-                    },
-                    file: self.file.clone(),
-                },
-            })),
+                });
+
+                TopLevel::Foo
+            }
         }
     }
 
@@ -3309,19 +3382,7 @@ impl Parser {
 
                 let as_result = self.expect_ident();
 
-                let to_be_called;
-                if let Ok(ident) = as_result {
-                    to_be_called = Some(ident);
-                } else {
-                    to_be_called = Some(Ident {
-                        ident: format!("Unnamed"),
-                        span: Span {
-                            st: Pos { column: 0, line: 0 },
-                            en: Pos { column: 0, line: 0 },
-                            file: self.file.clone(),
-                        },
-                    });
-                }
+                let to_be_called = Some(as_result);
 
                 take = (ident, to_be_called);
             }
@@ -3368,12 +3429,12 @@ impl Parser {
     }
 
     // --- The module import ---
-    fn parse_take(&mut self) -> Result<TopLevel, ()> {
+    fn parse_take(&mut self) -> TopLevel {
         // For: mú blablabla/xyz
         let stm_st = self.peek_span().st.clone();
         self.init_stm(&Token::Take);
 
-        let lib_or_mod_ident = self.expect_ident()?;
+        let lib_or_mod_ident = self.expect_ident();
         self.expect(&Token::Slash);
         // mú lib/
         match self.peek() {
@@ -3385,9 +3446,9 @@ impl Parser {
                 // mú mod/{...}
                 let take = self.get_take_mutip_elems();
 
-                let docs = self.end_stmt_parse(true)?;
+                let docs = self.end_stmt_parse(true);
 
-                Ok(TopLevel::MultiTakeStmt {
+                TopLevel::MultiTakeStmt {
                     take,
                     from: ModPath::Ident(lib_or_mod_ident.clone()),
                     lib: None,
@@ -3399,7 +3460,7 @@ impl Parser {
                         },
                         docs,
                     },
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::MacroCall(_),
@@ -3408,8 +3469,8 @@ impl Parser {
                 // mú mod/#macrocall
                 let take = self.get_take_elem();
 
-                let docs = self.end_stmt_parse(true)?;
-                Ok(TopLevel::TakeStmt {
+                let docs = self.end_stmt_parse(true);
+                TopLevel::TakeStmt {
                     take: take,
                     from: ModPath::Ident(lib_or_mod_ident.clone()),
                     lib: None,
@@ -3421,7 +3482,7 @@ impl Parser {
                         },
                         docs,
                     },
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::StringLiteral(s),
@@ -3439,9 +3500,9 @@ impl Parser {
                     self.advance();
                     let takes = self.get_take_mutip_elems();
 
-                    let docs = self.end_stmt_parse(true)?;
+                    let docs = self.end_stmt_parse(true);
 
-                    Ok(TopLevel::MultiTakeStmt {
+                    TopLevel::MultiTakeStmt {
                         info: StmtInfo {
                             span: Span {
                                 st: stm_st,
@@ -3453,14 +3514,14 @@ impl Parser {
                         take: takes,
                         from: ModPath::Str(from_str),
                         lib: Some(lib_or_mod_ident),
-                        
-                    })
+                    }
                 } else {
                     // mú mod\"path/mod.kui"\#macrocall
                     let take = self.get_take_elem();
 
-                    let docs = self.end_stmt_parse(true)?;
-                    Ok(TopLevel::TakeStmt {
+                    let docs = self.end_stmt_parse(true);
+
+                    TopLevel::TakeStmt {
                         info: StmtInfo {
                             span: Span {
                                 st: stm_st,
@@ -3472,8 +3533,7 @@ impl Parser {
                         take: take,
                         from: ModPath::Str(from_str),
                         lib: Some(lib_or_mod_ident),
-                        
-                    })
+                    }
                 }
             }
             Some(FullTok {
@@ -3497,9 +3557,9 @@ impl Parser {
                                 // mú lib/ident1/{...}
                                 let take = self.get_take_mutip_elems();
 
-                                let docs = self.end_stmt_parse(true)?;
+                                let docs = self.end_stmt_parse(true);
 
-                                Ok(TopLevel::MultiTakeStmt {
+                                TopLevel::MultiTakeStmt {
                                     info: StmtInfo {
                                         span: Span {
                                             st: stm_st,
@@ -3514,7 +3574,7 @@ impl Parser {
                                         span: span1,
                                     }),
                                     lib: Some(lib_or_mod_ident),
-                                })
+                                }
                             }
                             Some(FullTok {
                                 kind: Token::Identifier(ident2),
@@ -3539,9 +3599,9 @@ impl Parser {
                                         // mú lib/ident1/ident2/{...}
                                         let take = self.get_take_mutip_elems();
 
-                                        let docs = self.end_stmt_parse(true)?;
+                                        let docs = self.end_stmt_parse(true);
 
-                                        Ok(TopLevel::MultiTakeStmt {
+                                        TopLevel::MultiTakeStmt {
                                             info: StmtInfo {
                                                 span: Span {
                                                     st: stm_st,
@@ -3553,13 +3613,13 @@ impl Parser {
                                             take,
                                             from: ModPath::FromLibFolder(lib_folder, lib_mod),
                                             lib: Some(lib_or_mod_ident),
-                                        })
+                                        }
                                     } else {
                                         // mú lib/ident1/ident2/#macrocall
                                         let take = self.get_take_elem();
 
-                                        let docs = self.end_stmt_parse(true)?;
-                                        Ok(TopLevel::TakeStmt {
+                                        let docs = self.end_stmt_parse(true);
+                                        TopLevel::TakeStmt {
                                             info: StmtInfo {
                                                 span: Span {
                                                     st: stm_st,
@@ -3571,7 +3631,7 @@ impl Parser {
                                             take: take,
                                             from: ModPath::FromLibFolder(lib_folder, lib_mod),
                                             lib: Some(lib_or_mod_ident),
-                                        })
+                                        }
                                     }
                                 } else {
                                     self.reverse();
@@ -3579,9 +3639,9 @@ impl Parser {
                                     //               ^^^^^^
                                     let take = self.get_take_elem();
 
-                                    let docs = self.end_stmt_parse(false)?;
+                                    let docs = self.end_stmt_parse(false);
 
-                                    Ok(TopLevel::TakeStmt {
+                                    TopLevel::TakeStmt {
                                         info: StmtInfo {
                                             span: Span {
                                                 st: stm_st,
@@ -3596,8 +3656,7 @@ impl Parser {
                                             span: span1,
                                         }),
                                         lib: Some(lib_or_mod_ident),
-                                        
-                                    })
+                                    }
                                 }
                             }
                             Some(FullTok {
@@ -3607,9 +3666,9 @@ impl Parser {
                                 // mú lib/ident1/#macr
                                 let take = self.get_take_elem();
 
-                                let docs = self.end_stmt_parse(false)?;
+                                let docs = self.end_stmt_parse(false);
 
-                                Ok(TopLevel::TakeStmt {
+                                TopLevel::TakeStmt {
                                     info: StmtInfo {
                                         span: Span {
                                             st: stm_st,
@@ -3624,20 +3683,28 @@ impl Parser {
                                         span: span1,
                                     }),
                                     lib: Some(lib_or_mod_ident),
-                                })
+                                }
                             }
-                            Some(oth) => Err(self.errs.push(Error {
-                                message: format!("Unexpected importation argument"),
-                                span: oth.span,
-                            })),
-                            None => Err(self.errs.push(Error {
-                                message: format!("Kò tíì yẹ kí fáílì yìí ó dópin"),
-                                span: Span {
-                                    st: Pos { column: 0, line: 0 },
-                                    en: Pos { column: 0, line: 0 },
-                                    file: self.file.clone(),
-                                },
-                            })),
+                            Some(oth) => {
+                                self.errs.push(Error {
+                                    message: format!("Unexpected importation argument"),
+                                    span: oth.span,
+                                });
+
+                                TopLevel::Foo
+                            }
+                            None => {
+                                self.errs.push(Error {
+                                    message: format!("Kò tíì yẹ kí fáílì yìí ó dópin"),
+                                    span: Span {
+                                        st: Pos { column: 0, line: 0 },
+                                        en: Pos { column: 0, line: 0 },
+                                        file: self.file.clone(),
+                                    },
+                                });
+
+                                TopLevel::Foo
+                            }
                         }
                     }
                     _ => {
@@ -3646,9 +3713,9 @@ impl Parser {
                         //        ^^^^^^
                         let take = self.get_take_elem();
 
-                        let docs = self.end_stmt_parse(false)?;
+                        let docs = self.end_stmt_parse(false);
 
-                        Ok(TopLevel::TakeStmt {
+                        TopLevel::TakeStmt {
                             take,
                             from: ModPath::Ident(lib_or_mod_ident.clone()),
                             lib: None,
@@ -3660,22 +3727,30 @@ impl Parser {
                                 },
                                 docs,
                             },
-                        })
+                        }
                     }
                 }
             }
-            Some(oth) => Err(self.errs.push(Error {
-                message: format!("Unexpected importation argument"),
-                span: oth.span,
-            })),
-            None => Err(self.errs.push(Error {
-                message: format!("Kò tíì yẹ kí fáílì yìí ó dópin"),
-                span: Span {
-                    st: Pos { column: 0, line: 0 },
-                    en: Pos { column: 0, line: 0 },
-                    file: self.file.clone(),
-                },
-            })),
+            Some(oth) => {
+                self.errs.push(Error {
+                    message: format!("Unexpected importation argument"),
+                    span: oth.span,
+                });
+
+                TopLevel::Foo
+            }
+            None => {
+                self.errs.push(Error {
+                    message: format!("Kò tíì yẹ kí fáílì yìí ó dópin"),
+                    span: Span {
+                        st: Pos { column: 0, line: 0 },
+                        en: Pos { column: 0, line: 0 },
+                        file: self.file.clone(),
+                    },
+                });
+
+                TopLevel::Foo
+            }
         }
     }
 
@@ -3700,19 +3775,19 @@ impl Parser {
         }
     }
 
-    fn parse_args(&mut self, end: Token) -> Result<Vec<Expr>, ()> {
+    fn parse_args(&mut self, end: Token) -> Vec<Expr> {
         // ( is alrealdy consumed
         let mut args = vec![];
 
         while self.peek_kind() != Some(end.clone()) {
-            args.push(self.parse_expr(0, false)?);
+            args.push(self.parse_expr(0, false));
             if self.peek_kind() == Some(Token::Comma) {
                 self.advance();
-            } else if self.peek_kind() == Some(end) {
+            } else if self.peek_kind() == Some(end.clone()) {
                 break;
             } else {
                 let kind = self.peek_kind();
-                return Err(self.errs.push(Error {
+                self.errs.push(Error {
                     message: format!("'{:?}' kọ́ ni oó yẹ kí oó wà níbí. Lo ',' dípò", kind),
                     span: Span {
                         st: Pos {
@@ -3725,24 +3800,24 @@ impl Parser {
                         },
                         file: self.file.clone(),
                     },
-                }));
+                });
             }
         }
         self.advance();
-        Ok(args)
+        args
     }
 
-    fn parse_field_assignms(&mut self) -> Result<Vec<FieldAssignm>, ()> {
+    fn parse_field_assignms(&mut self) -> Vec<FieldAssignm> {
         let mut assigns = vec![];
 
         while self.peek_kind() != Some(Token::RBrace) {
-            let ident = self.expect_ident()?;
+            let ident = self.expect_ident();
             match self.peek_kind() {
                 Some(Token::Colon) => {
                     self.advance();
                     // then it's labeled
 
-                    let expr = self.parse_expr(0, false)?;
+                    let expr = self.parse_expr(0, false);
 
                     assigns.push(FieldAssignm { ident, expr });
 
@@ -3770,10 +3845,10 @@ impl Parser {
         }
 
         self.expect(&Token::RBrace);
-        Ok(assigns)
+        assigns
     }
 
-    fn parse_macro_expr(&mut self, name: Ident, expr_st: Pos) -> Result<Expr, ()> {
+    fn parse_macro_expr(&mut self, name: Ident, expr_st: Pos) -> Expr {
         let mut tokens = vec![];
         let delimiter;
         let mut _expr_en;
@@ -3876,7 +3951,8 @@ impl Parser {
             }
             _ => {
                 _expr_en = self.peek_span().en.clone();
-                return Err(self.errs.push(Error {
+
+                self.errs.push(Error {
                     message: format!("Delimiter gbodọ̀ tẹ̀lé e"),
                     span: Span {
                         st: Pos {
@@ -3889,11 +3965,12 @@ impl Parser {
                         },
                         file: self.file.clone(),
                     },
-                }));
+                });
+                delimiter = Delimiter::Paren;
             }
         }
 
-        Ok(Expr {
+        Expr {
             kind: ExprKind::Macro {
                 name,
                 delimiter,
@@ -3904,10 +3981,10 @@ impl Parser {
                 en: _expr_en,
                 file: self.file.clone(),
             },
-        })
+        }
     }
 
-    fn after_ident_expr(&mut self, ident: &Ident) -> Result<Expr, ()> {
+    fn after_ident_expr(&mut self, ident: &Ident) -> Expr {
         match self.peek() {
             Some(FullTok {
                 kind: Token::Less,
@@ -3922,20 +3999,20 @@ impl Parser {
                     Some(Token::Comma) | Some(Token::Less) | Some(Token::Greater) => {
                         self.reverse(); // go back to the right position
 
-                        let expr = self.parse_generical_call(ident.clone())?;
+                        let expr = self.parse_generical_call(ident.clone());
 
-                        Ok(expr)
+                        expr
                     }
                     _ => {
                         //if it's not a function call generics
                         self.reverse(); // we still need to go back to the right postion
-                        Ok(Expr {
+                        Expr {
                             span: ident.span.clone(),
                             kind: ExprKind::Ident {
                                 affix: None,
                                 ident: ident.clone(),
                             },
-                        })
+                        }
                     }
                 }
             }
@@ -3945,9 +4022,9 @@ impl Parser {
             }) => {
                 self.advance();
                 // a function call
-                let args = self.parse_args(Token::RParen)?;
+                let args = self.parse_args(Token::RParen);
 
-                Ok(Expr {
+                Expr {
                     kind: ExprKind::ArgBuffer {
                         asy: None,
                         generics: vec![],
@@ -3955,7 +4032,7 @@ impl Parser {
                         name: ident.clone(),
                     },
                     span: ident.span.clone(),
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::LBrace,
@@ -3963,10 +4040,10 @@ impl Parser {
             }) => {
                 let name = Some(ident.clone());
                 let st = self.peek_span().st.clone();
-                let assigns = self.parse_field_assignms()?;
+                let assigns = self.parse_field_assignms();
                 let en = self.peek_span().en.clone();
 
-                Ok(Expr {
+                Expr {
                     kind: ExprKind::StructVal {
                         vals: assigns,
                         ident: name,
@@ -3976,7 +4053,7 @@ impl Parser {
                         en,
                         file: self.file.clone(),
                     },
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::Slash,
@@ -3999,7 +4076,7 @@ impl Parser {
                                 kind: Token::Identifier(_),
                                 span: _,
                             }) => {
-                                mod_path = ModPath::Ident(self.expect_ident()?);
+                                mod_path = ModPath::Ident(self.expect_ident());
                             }
                             Some(FullTok {
                                 kind: Token::StringLiteral(strlit),
@@ -4044,9 +4121,9 @@ impl Parser {
                         }
 
                         self.advance(); // its currently on \ token
-                        let take = self.nud(false)?;
+                        let take = self.nud(false);
 
-                        Ok(Expr {
+                        Expr {
                             kind: ExprKind::Import {
                                 imported: Box::new(take.clone()),
                                 from: mod_path,
@@ -4057,14 +4134,14 @@ impl Parser {
                                 en: take.span.en,
                                 file: self.file.clone(),
                             },
-                        })
+                        }
                     }
                     _ => {
                         self.reverse();
                         // mú ident\import
-                        let imported = Box::new(self.nud(false)?);
+                        let imported = Box::new(self.nud(false));
 
-                        Ok(Expr {
+                        Expr {
                             span: Span {
                                 st: ident.span.st,
                                 en: imported.as_ref().span.en,
@@ -4075,7 +4152,7 @@ impl Parser {
                                 from: ModPath::Ident(ident.clone()),
                                 lib: None,
                             },
-                        })
+                        }
                     }
                 }
             }
@@ -4086,7 +4163,7 @@ impl Parser {
                 self.advance();
 
                 let namespace = ident;
-                let new_left = self.nud(false)?;
+                let new_left = self.nud(false);
 
                 match new_left.kind.clone() {
                     ExprKind::Ident {
@@ -4108,7 +4185,7 @@ impl Parser {
                                         },
                                         0,
                                         false,
-                                    )?;
+                                    );
 
                                     match self.peek() {
                                         Some(FullTok {
@@ -4124,9 +4201,9 @@ impl Parser {
                                                 },
                                                 0,
                                                 false,
-                                            )?);
+                                            ));
 
-                                            Ok(Expr {
+                                            Expr {
                                                 kind: ExprKind::ElemNamespaceAccess {
                                                     ident: Some(namespace.clone()),
                                                     access: call.clone(),
@@ -4136,11 +4213,15 @@ impl Parser {
                                                     en: call.as_ref().span.en,
                                                     file: self.file.clone(),
                                                 },
-                                            })
+                                            }
                                         }
                                         _ => {
                                             self.expect(&Token::LParen);
-                                            Err(())
+
+                                            Expr {
+                                                kind: ExprKind::Foo,
+                                                span: self.zero_span.clone(),
+                                            }
                                         }
                                     }
                                 }
@@ -4157,8 +4238,9 @@ impl Parser {
                                         },
                                         0,
                                         false,
-                                    )?);
-                                    Ok(Expr {
+                                    ));
+
+                                    Expr {
                                         kind: ExprKind::ElemNamespaceAccess {
                                             ident: Some(namespace.clone()),
                                             access: call.clone(),
@@ -4168,9 +4250,9 @@ impl Parser {
                                             en: call.as_ref().span.en,
                                             file: self.file.clone(),
                                         },
-                                    })
+                                    }
                                 }
-                                _ => Ok(Expr {
+                                _ => Expr {
                                     span: Span {
                                         st: namespace.span.st,
                                         en: new_left.span.en,
@@ -4180,10 +4262,10 @@ impl Parser {
                                         ident: Some(namespace.clone()),
                                         access: Box::new(new_left),
                                     },
-                                }),
+                                },
                             }
                         } else {
-                            Ok(new_left)
+                            new_left
                         }
                     }
                     ExprKind::Macro {
@@ -4199,7 +4281,8 @@ impl Parser {
                             },
                             span: name.span,
                         });
-                        Ok(Expr {
+
+                        Expr {
                             kind: ExprKind::ElemNamespaceAccess {
                                 ident: Some(namespace.clone()),
                                 access: call.clone(),
@@ -4209,7 +4292,7 @@ impl Parser {
                                 en: call.as_ref().span.en,
                                 file: self.file.clone(),
                             },
-                        })
+                        }
                     }
                     ExprKind::ArgBuffer {
                         asy: _,
@@ -4218,7 +4301,8 @@ impl Parser {
                         name: _,
                     } => {
                         let call = Box::new(new_left);
-                        Ok(Expr {
+
+                        Expr {
                             kind: ExprKind::ElemNamespaceAccess {
                                 ident: Some(namespace.clone()),
                                 access: call.clone(),
@@ -4228,7 +4312,7 @@ impl Parser {
                                 en: call.as_ref().span.en,
                                 file: self.file.clone(),
                             },
-                        })
+                        }
                     }
                     // Expr::Block(b) => { // mainly for macro expansion
                     //     let call = Box::new(Expr::Block(b));
@@ -4237,63 +4321,63 @@ impl Parser {
                     _ => todo!("Expression not support for Namespace access"),
                 }
             }
-            _ => Ok(Expr {
+            _ => Expr {
                 span: ident.span.clone(),
                 kind: ExprKind::Ident {
                     affix: None,
                     ident: ident.clone(),
                 },
-            }),
+            },
         }
     }
 
-    fn nud(&mut self, _is_pattern: bool) -> Result<Expr, ()> {
+    fn nud(&mut self, _is_pattern: bool) -> Expr {
         const PREFIX_PREC: u8 = 15;
         let expr_st = self.peek_span().st.clone();
         match self.advance() {
             Some(FullTok {
                 kind: Token::Number(n),
                 span,
-            }) => Ok(Expr {
+            }) => Expr {
                 kind: ExprKind::Number(n),
                 span,
-            }),
+            },
             Some(FullTok {
                 kind: Token::SelfKw,
                 span,
-            }) => Ok(Expr {
+            }) => Expr {
                 kind: ExprKind::SelfVal,
                 span,
-            }),
+            },
             Some(FullTok {
                 kind: Token::ArityLiteral(b),
                 span,
-            }) => Ok(Expr {
+            }) => Expr {
                 kind: ExprKind::TruthVal(b),
                 span,
-            }),
+            },
             Some(FullTok {
                 kind: Token::StringLiteral(s),
                 span,
-            }) => Ok(Expr {
+            }) => Expr {
                 kind: ExprKind::Str(s),
                 span,
-            }),
+            },
             Some(FullTok {
                 kind: Token::Assign,
                 span: _,
             }) => {
-                let to_assign = self.parse_mutable_ident()?;
+                let to_assign = self.parse_mutable_ident();
 
-                Ok(to_assign)
+                to_assign
             }
             Some(FullTok {
                 kind: Token::Move,
                 span,
             }) => {
-                let ident = self.expect_ident()?;
+                let ident = self.expect_ident();
 
-                Ok(Expr {
+                Expr {
                     span: Span {
                         st: span.st,
                         en: ident.span.en,
@@ -4303,18 +4387,18 @@ impl Parser {
                         affix: Some(IdentAffix::Move(span)),
                         ident: ident.clone(),
                     },
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::Await,
                 span,
             }) => {
-                let name = self.expect_ident()?;
+                let name = self.expect_ident();
 
                 match self.peek_kind() {
                     Some(Token::Less) => {
                         self.advance();
-                        let call = self.parse_generical_call(name.clone())?;
+                        let call = self.parse_generical_call(name.clone());
 
                         match call.kind.clone() {
                             ExprKind::ArgBuffer {
@@ -4322,7 +4406,7 @@ impl Parser {
                                 generics,
                                 args,
                                 name,
-                            } => Ok(Expr {
+                            } => Expr {
                                 kind: ExprKind::ArgBuffer {
                                     asy: Some(Asy::Await(span)),
                                     generics,
@@ -4330,15 +4414,18 @@ impl Parser {
                                     name,
                                 },
                                 span: call.span,
-                            }),
-                            _ => Err(()),
+                            },
+                            _ => Expr {
+                                kind: ExprKind::Foo,
+                                span: self.zero_span.clone(),
+                            },
                         }
                     }
                     Some(Token::LParen) => {
                         self.advance();
-                        let args = self.parse_args(Token::RParen)?;
+                        let args = self.parse_args(Token::RParen);
 
-                        Ok(Expr {
+                        Expr {
                             span: Span {
                                 st: span.st,
                                 en: name.span.en,
@@ -4350,24 +4437,31 @@ impl Parser {
                                 args,
                                 name: name.clone(),
                             },
-                        })
+                        }
                     }
-                    _ => Err(self.errs.push(Error {
-                        message: format!("itú nìkan ni ètò lè dúró de"),
-                        span: span,
-                    })),
+                    _ => {
+                        self.errs.push(Error {
+                            message: format!("itú nìkan ni ètò lè dúró de"),
+                            span: span,
+                        });
+
+                        Expr {
+                            kind: ExprKind::Foo,
+                            span: self.zero_span.clone(),
+                        }
+                    }
                 }
             }
             Some(FullTok {
                 kind: Token::Start,
                 span,
             }) => {
-                let name = self.expect_ident()?;
+                let name = self.expect_ident();
 
                 match self.peek_kind() {
                     Some(Token::Less) => {
                         self.advance();
-                        let call = self.parse_generical_call(name.clone())?;
+                        let call = self.parse_generical_call(name.clone());
 
                         match call.kind.clone() {
                             ExprKind::ArgBuffer {
@@ -4375,7 +4469,7 @@ impl Parser {
                                 generics,
                                 args,
                                 name,
-                            } => Ok(Expr {
+                            } => Expr {
                                 kind: ExprKind::ArgBuffer {
                                     asy: Some(Asy::Start(span)),
                                     generics,
@@ -4383,15 +4477,18 @@ impl Parser {
                                     name,
                                 },
                                 span: call.span,
-                            }),
-                            _ => Err(()),
+                            },
+                            _ => Expr {
+                                kind: ExprKind::Foo,
+                                span: self.zero_span.clone(),
+                            },
                         }
                     }
                     Some(Token::LParen) => {
                         self.advance();
-                        let args = self.parse_args(Token::RParen)?;
+                        let args = self.parse_args(Token::RParen);
 
-                        Ok(Expr {
+                        Expr {
                             span: Span {
                                 st: span.st,
                                 en: name.span.en,
@@ -4403,12 +4500,19 @@ impl Parser {
                                 args,
                                 name: name.clone(),
                             },
-                        })
+                        }
                     }
-                    _ => Err(self.errs.push(Error {
-                        message: format!("itú nìkan ni o lè bẹ̀rẹ̀ idúró fún"),
-                        span: span,
-                    })),
+                    _ => {
+                        self.errs.push(Error {
+                            message: format!("itú nìkan ni o lè bẹ̀rẹ̀ idúró fún"),
+                            span: span,
+                        });
+
+                        Expr {
+                            kind: ExprKind::Foo,
+                            span: self.zero_span.clone(),
+                        }
+                    }
                 }
             }
             Some(FullTok {
@@ -4416,14 +4520,14 @@ impl Parser {
                 span,
             }) => {
                 let ident = Ident { ident, span };
-                Ok(self.after_ident_expr(&ident)?)
+                self.after_ident_expr(&ident)
             }
             Some(FullTok {
                 kind: Token::If,
                 span: _,
             }) => {
                 self.reverse();
-                let smt = self.parse_if()?;
+                let smt = self.parse_if();
 
                 match smt {
                     BlockLevel::IfStmt {
@@ -4432,7 +4536,7 @@ impl Parser {
                         else_ifs,
                         else_exe,
                         info,
-                    } => Ok(Expr {
+                    } => Expr {
                         kind: ExprKind::If {
                             bool_expr: Box::new(bool_expr),
                             exe: Box::new(exe),
@@ -4440,8 +4544,11 @@ impl Parser {
                             else_exe: Box::new(else_exe),
                         },
                         span: info.span,
-                    }),
-                    _ => Err(()),
+                    },
+                    _ => Expr {
+                        kind: ExprKind::Foo,
+                        span: self.zero_span.clone(),
+                    },
                 }
             }
             Some(FullTok {
@@ -4449,21 +4556,24 @@ impl Parser {
                 span: _,
             }) => {
                 self.reverse();
-                let smt = self.parse_match()?;
+                let smt = self.parse_match();
                 match smt {
-                    BlockLevel::MatchStmt { var, arms, info } => Ok(Expr {
+                    BlockLevel::MatchStmt { var, arms, info } => Expr {
                         kind: ExprKind::Match { var, arms },
                         span: info.span,
-                    }),
-                    _ => Err(()),
+                    },
+                    _ => Expr {
+                        kind: ExprKind::Foo,
+                        span: self.zero_span.clone(),
+                    },
                 }
             }
             Some(FullTok {
                 kind: Token::Minus,
                 span,
             }) => {
-                let rhs = self.parse_expr(PREFIX_PREC, false)?;
-                Ok(Expr {
+                let rhs = self.parse_expr(PREFIX_PREC, false);
+                Expr {
                     span: Span {
                         st: span.st,
                         en: rhs.span.en,
@@ -4476,7 +4586,7 @@ impl Parser {
                         },
                         rhs: Box::new(rhs.clone()),
                     },
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::At,
@@ -4488,7 +4598,7 @@ impl Parser {
                         span,
                     }) => {
                         // Only an variable can have a memory address
-                        Ok(Expr {
+                        Expr {
                             span: Span {
                                 st: at_span.st,
                                 en: span.en,
@@ -4507,7 +4617,7 @@ impl Parser {
                                     span,
                                 }),
                             ),
-                        })
+                        }
                     } // kí *tóyí Okùn àpẹrẹ tóyí: @yí orísùu
                     // orísùu most be mutable since its assigned to a mut ptr
                     Some(FullTok {
@@ -4517,7 +4627,7 @@ impl Parser {
                         Some(FullTok {
                             kind: Token::Identifier(i),
                             span: ident_span,
-                        }) => Ok(Expr {
+                        }) => Expr {
                             kind: ExprKind::Address(
                                 MutStatus::Mut(span.clone()),
                                 Box::new(Expr {
@@ -4536,9 +4646,32 @@ impl Parser {
                                 en: ident_span.en,
                                 file: self.file.clone(),
                             },
-                        }),
-                        _ => Err(self.errs.push(Error {
-                            message: format!("Identifier ni òǹṣàkópọ̀ ń retí níbí yìí"),
+                        },
+                        _ => {
+                            self.errs.push(Error {
+                                message: format!("Identifier ni òǹṣàkópọ̀ ń retí níbí yìí"),
+                                span: Span {
+                                    st: Pos {
+                                        column: self.peek_span().st.column,
+                                        line: self.peek_span().st.line,
+                                    },
+                                    en: Pos {
+                                        column: self.peek_span().en.column,
+                                        line: self.peek_span().en.line,
+                                    },
+                                    file: self.file.clone(),
+                                },
+                            });
+
+                            Expr {
+                                kind: ExprKind::Foo,
+                                span: self.zero_span.clone(),
+                            }
+                        }
+                    },
+                    _ => {
+                        self.errs.push(Error {
+                            message: format!("Identifier tàbí ni òǹṣàkópọ̀ ń retí níbí yìí"),
                             span: Span {
                                 st: Pos {
                                     column: self.peek_span().st.column,
@@ -4549,31 +4682,23 @@ impl Parser {
                                     line: self.peek_span().en.line,
                                 },
                                 file: self.file.clone(),
-                            }
-                        })),
-                    },
-                    _ => Err(self.errs.push(Error {
-                        message: format!("Identifier tàbí ni òǹṣàkópọ̀ ń retí níbí yìí"),
-                        span: Span {
-                            st: Pos {
-                                column: self.peek_span().st.column,
-                                line: self.peek_span().st.line,
                             },
-                            en: Pos {
-                                column: self.peek_span().en.column,
-                                line: self.peek_span().en.line,
-                            },
-                            file: self.file.clone(),
-                        },
-                    })),
+                        });
+
+                        Expr {
+                            kind: ExprKind::Foo,
+                            span: self.zero_span.clone(),
+                        }
+                    }
                 }
             }
             Some(FullTok {
                 kind: Token::Exclam,
                 span,
             }) => {
-                let rhs = self.parse_expr(PREFIX_PREC, false)?;
-                Ok(Expr {
+                let rhs = self.parse_expr(PREFIX_PREC, false);
+
+                Expr {
                     span: Span {
                         st: span.st,
                         en: rhs.span.en,
@@ -4586,19 +4711,19 @@ impl Parser {
                         },
                         rhs: Box::new(rhs.clone()),
                     },
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::MacroCall(n),
                 span,
-            }) => Ok(self.parse_macro_expr(Ident { ident: n, span }, expr_st)?),
+            }) => self.parse_macro_expr(Ident { ident: n, span }, expr_st),
             Some(FullTok {
                 kind: Token::LParen,
                 span: _,
             }) => {
-                let expr = self.parse_expr(0, false)?;
+                let expr = self.parse_expr(0, false);
                 self.expect(&Token::RParen);
-                Ok(expr)
+                expr
             }
             Some(FullTok {
                 kind: Token::LBracket,
@@ -4606,14 +4731,15 @@ impl Parser {
             }) => {
                 let mut exprs: Vec<Expr> = Vec::new();
                 loop {
-                    exprs.push(self.parse_expr(0, false)?);
+                    exprs.push(self.parse_expr(0, false));
                     if self.peek_kind() == Some(Token::Comma) {
                         self.advance();
                     } else if self.peek_kind() == Some(Token::RBracket) {
                         break;
                     } else {
                         let kind = self.peek_kind();
-                        return Err(self.errs.push(Error {
+
+                        self.errs.push(Error {
                             message: format!("'{:?}' kọ́ ni oó yẹ kí oó wà níbí", kind),
                             span: Span {
                                 st: Pos {
@@ -4626,15 +4752,15 @@ impl Parser {
                                 },
                                 file: self.file.clone(),
                             },
-                        }));
+                        });
                     }
                 }
 
                 self.advance();
-                Ok(Expr {
+                Expr {
                     kind: ExprKind::List(exprs),
                     span,
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::Dot,
@@ -4649,10 +4775,10 @@ impl Parser {
                         // .{}
                         // let st = self.peek_span().st.clone();
                         self.advance();
-                        let assigns = self.parse_field_assignms()?;
+                        let assigns = self.parse_field_assignms();
                         let en = self.peek_span().en.clone();
 
-                        Ok(Expr {
+                        Expr {
                             kind: ExprKind::StructVal {
                                 ident: None,
                                 vals: assigns,
@@ -4662,7 +4788,7 @@ impl Parser {
                                 en,
                                 file: self.file.clone(),
                             },
-                        })
+                        }
                     }
                     Some(FullTok {
                         kind: Token::Identifier(ident),
@@ -4677,7 +4803,7 @@ impl Parser {
                             Some(Token::LParen) => {
                                 // .Variant()
                                 self.advance();
-                                let buf_args = self.parse_args(Token::RParen)?;
+                                let buf_args = self.parse_args(Token::RParen);
 
                                 kind = Expr {
                                     kind: ExprKind::ArgBuffer {
@@ -4697,7 +4823,7 @@ impl Parser {
                                 let st = self.peek_span().st.clone();
                                 self.advance();
                                 // this is a variant of struct form
-                                let assigns = self.parse_field_assignms()?;
+                                let assigns = self.parse_field_assignms();
                                 let en = self.peek_span().en.clone();
 
                                 kind = Expr {
@@ -4728,7 +4854,7 @@ impl Parser {
                         }
                         let en = self.peek_span().en.clone();
 
-                        Ok(Expr {
+                        Expr {
                             kind: ExprKind::ElemNamespaceAccess {
                                 ident: None,
                                 access: Box::new(kind),
@@ -4738,72 +4864,93 @@ impl Parser {
                                 en,
                                 file: self.file.clone(),
                             },
-                        }) // name is infered
+                        } // name is infered
                     }
-                    _ => Err(self.errs.push(Error {
-                        message: format!("Expected an Enum variant or Struct value"),
-                        span: Span {
-                            st: Pos {
-                                column: self.peek_span().st.column,
-                                line: self.peek_span().st.line,
+                    _ => {
+                        self.errs.push(Error {
+                            message: format!("Expected an Enum variant or Struct value"),
+                            span: Span {
+                                st: Pos {
+                                    column: self.peek_span().st.column,
+                                    line: self.peek_span().st.line,
+                                },
+                                en: Pos {
+                                    column: self.peek_span().en.column,
+                                    line: self.peek_span().en.line,
+                                },
+                                file: self.file.clone(),
                             },
-                            en: Pos {
-                                column: self.peek_span().en.column,
-                                line: self.peek_span().en.line,
-                            },
-                            file: self.file.clone(),
-                        },
-                    })),
+                        });
+
+                        Expr {
+                            kind: ExprKind::Foo,
+                            span: self.zero_span.clone(),
+                        }
+                    }
                 }
             }
             Some(FullTok {
                 kind: Token::LBrace,
                 span,
             }) => {
-                let stms = self.parse_stmts()?;
+                let stms = self.parse_stmts();
 
-                Ok(Expr {
+                Expr {
                     kind: ExprKind::Block(stms.0),
                     span: Span {
                         st: span.st,
                         en: stms.1,
                         file: self.file.clone(),
                     },
-                })
+                }
             }
             Some(FullTok {
                 kind: Token::Default,
                 span,
-            }) => Ok(Expr {
+            }) => Expr {
                 kind: ExprKind::Default,
                 span,
-            }),
-            Some(oth) => Err(self.errs.push(Error {
-                message: format!("'{:?}' kọ́ ni oó yẹ kí oó wà níbí", oth.kind),
-                span: oth.span,
-            })),
-            None => Err(self.errs.push(Error {
-                message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
-                span: Span {
-                    st: Pos {
-                        column: self.peek_span().st.column,
-                        line: self.peek_span().st.line,
+            },
+            Some(oth) => {
+                self.errs.push(Error {
+                    message: format!("'{:?}' kọ́ ni oó yẹ kí oó wà níbí", oth.kind),
+                    span: oth.span,
+                });
+
+                Expr {
+                    kind: ExprKind::Foo,
+                    span: self.zero_span.clone(),
+                }
+            }
+            None => {
+                self.errs.push(Error {
+                    message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
+                    span: Span {
+                        st: Pos {
+                            column: self.peek_span().st.column,
+                            line: self.peek_span().st.line,
+                        },
+                        en: Pos {
+                            column: self.peek_span().en.column,
+                            line: self.peek_span().en.line,
+                        },
+                        file: self.file.clone(),
                     },
-                    en: Pos {
-                        column: self.peek_span().en.column,
-                        line: self.peek_span().en.line,
-                    },
-                    file: self.file.clone(),
-                },
-            })),
+                });
+
+                Expr {
+                    kind: ExprKind::Foo,
+                    span: self.zero_span.clone(),
+                }
+            }
         }
     }
 
-    fn parse_generical_call(&mut self, ident: Ident) -> Result<Expr, ()> {
+    fn parse_generical_call(&mut self, ident: Ident) -> Expr {
         let mut generics = Vec::new();
 
         while self.peek_kind() != Some(Token::Greater) {
-            generics.push(self.expect_typespec()?);
+            generics.push(self.expect_typespec());
             match self.peek_kind() {
                 Some(Token::Comma) => {
                     continue;
@@ -4836,9 +4983,9 @@ impl Parser {
         }
 
         self.expect(&Token::LParen);
-        let args = self.parse_args(Token::RParen)?;
+        let args = self.parse_args(Token::RParen);
 
-        Ok(Expr {
+        Expr {
             kind: ExprKind::ArgBuffer {
                 asy: None,
                 generics,
@@ -4846,10 +4993,10 @@ impl Parser {
                 name: ident.clone(),
             },
             span: ident.span,
-        })
+        }
     }
 
-    fn led(&mut self, left: Expr, op: FullTok, prec: u8, is_pattern: bool) -> Result<Expr, ()> {
+    fn led(&mut self, left: Expr, op: FullTok, prec: u8, is_pattern: bool) -> Expr {
         // const POSTFIX_PREC: u8 = 16;
         match op.kind {
             // infix binary ops
@@ -4864,8 +5011,8 @@ impl Parser {
             | Token::GreaterEq
             | Token::Equal
             | Token::NotEqual => {
-                let rhs = self.parse_expr(prec + 1, false)?;
-                Ok(Expr {
+                let rhs = self.parse_expr(prec + 1, false);
+                Expr {
                     kind: ExprKind::Binary {
                         lhs: Box::new(left.clone()),
                         op,
@@ -4876,11 +5023,12 @@ impl Parser {
                         en: rhs.span.en,
                         file: self.file.clone(),
                     },
-                })
+                }
             }
             Token::Less => {
-                let rhs = self.parse_expr(prec + 1, false)?;
-                Ok(Expr {
+                let rhs = self.parse_expr(prec + 1, false);
+
+                Expr {
                     kind: ExprKind::Binary {
                         lhs: Box::new(left.clone()),
                         op,
@@ -4891,7 +5039,7 @@ impl Parser {
                         en: rhs.span.en,
                         file: self.file.clone(),
                     },
-                })
+                }
             }
             Token::Dot => {
                 match self.peek_kind() {
@@ -4907,7 +5055,7 @@ impl Parser {
 
                         // after this; the compiler will parse Token::Dot as a nud first
                         let st = self.peek_span().st.clone();
-                        let _ = self.parse_expr(0, false)?;
+                        let _ = self.parse_expr(0, false);
                         let en = self.peek_span().en.clone();
 
                         self.errs.push(Error {
@@ -4919,13 +5067,13 @@ impl Parser {
                             },
                         });
 
-                        Ok(left)
+                        left
                     }
                     _ => {
                         let obj = Box::new(left);
                         let mut fields = vec![];
                         loop {
-                            let f = self.nud(is_pattern)?;
+                            let f = self.nud(is_pattern);
 
                             match f.kind {
                                 ExprKind::Ident {
@@ -4934,7 +5082,7 @@ impl Parser {
                                 } => match self.peek_kind() {
                                     Some(Token::LParen) => {
                                         self.advance();
-                                        let args = self.parse_args(Token::RParen)?;
+                                        let args = self.parse_args(Token::RParen);
 
                                         fields.push(Expr {
                                             kind: ExprKind::ArgBuffer {
@@ -4977,7 +5125,7 @@ impl Parser {
                             // }
                         }
 
-                        Ok(Expr {
+                        Expr {
                             kind: ExprKind::ObjAssess {
                                 obj: obj.clone(),
                                 fields: fields.clone(),
@@ -4987,60 +5135,75 @@ impl Parser {
                                 en: fields[fields.len() - 1].span.en,
                                 file: self.file.clone(),
                             },
-                        })
+                        }
                     }
                 }
             }
             Token::DDot => {
-                let rhs = self.parse_expr(prec + 1, false)?;
+                let rhs = self.parse_expr(prec + 1, false);
                 match &left {
-                    Expr { kind: ExprKind::Number(n1), span: s1 } => {
-                        match &rhs {
-                            Expr { kind: ExprKind::Number(n2), span: s2 } => {
-                                Ok(Expr {
-                                    kind: ExprKind::Binary {
-                                        lhs: Box::new(Expr { kind: ExprKind::Number(n1.clone()), span: s1.clone() }),
-                                        op,
-                                        rhs: Box::new(Expr { kind: ExprKind::Number(n2.clone()), span: s2.clone() }),
-                                    },
+                    Expr {
+                        kind: ExprKind::Number(n1),
+                        span: s1,
+                    } => match &rhs {
+                        Expr {
+                            kind: ExprKind::Number(n2),
+                            span: s2,
+                        } => Expr {
+                            kind: ExprKind::Binary {
+                                lhs: Box::new(Expr {
+                                    kind: ExprKind::Number(n1.clone()),
+                                    span: s1.clone(),
+                                }),
+                                op,
+                                rhs: Box::new(Expr {
+                                    kind: ExprKind::Number(n2.clone()),
+                                    span: s2.clone(),
+                                }),
+                            },
+                            span: Span {
+                                st: left.span.st,
+                                en: rhs.span.en,
+                                file: self.file.clone(),
+                            },
+                        },
+                        _ => {
+                            self.errs.push(Error{
+                                    message: format!("òǹkà ni oó yẹ kí oó wà lápá òsì àti ọ̀tún '..' , dípò '{:?}' tí oó wà lápá ọ̀tún", rhs),
                                     span: Span {
-                                        st: left.span.st,
-                                        en: rhs.span.en,
+                                        st: self.peek_span().st.clone(),
+                                        en: self.peek_span().en.clone(),
                                         file: self.file.clone()
                                     }
-                                })
-                            }
-                            _ => {
-                                Err(
-                                    self.errs.push(Error{
-                                        message: format!("òǹkà ni oó yẹ kí oó wà lápá òsì àti ọ̀tún '..' , dípò '{:?}' tí oó wà lápá ọ̀tún", rhs),
-                                        span: Span {
-                                            st: self.peek_span().st.clone(),
-                                            en: self.peek_span().en.clone(),
-                                            file: self.file.clone()
-                                        }
-                                    })
-                                )
+                                });
+
+                            Expr {
+                                kind: ExprKind::Foo,
+                                span: self.zero_span.clone(),
                             }
                         }
-                    }
+                    },
                     _ => {
-                        Err(
-                            self.errs.push(Error{
+                        self.errs.push(Error{
                                 message: format!("òǹkà ni oó yẹ kí oó wà lápá òsì àti ọ̀tún '..' , dípò '{:?}' tí oó wà lápá òsì", left),
                                 span: Span {
                                     st: self.peek_span().st.clone(),
                                     en: self.peek_span().en.clone(),
                                     file: self.file.clone()
                                 }
-                            })
-                        )
+                            });
+
+                        Expr {
+                            kind: ExprKind::Foo,
+                            span: self.zero_span.clone(),
+                        }
                     }
                 }
             }
             Token::As => {
-                let ty = Box::new(self.expect_typespec()?);
-                Ok(Expr {
+                let ty = Box::new(self.expect_typespec());
+                
+                Expr {
                     span: Span {
                         st: left.span.st,
                         en: ty.span.en,
@@ -5050,38 +5213,42 @@ impl Parser {
                         expr: Box::new(left),
                         ty,
                     },
-                })
+                }
             }
-            _ => Err(self.errs.push(Error {
-                message: format!("'{:?}' kọ́ ni oó yẹ kí oó wà níbí", op.kind),
-                span: Span {
-                    st: self.peek_span().st.clone(),
-                    en: self.peek_span().en.clone(),
-                    file: self.file.clone(),
-                },
-            })), // This shouldn't be reached anyway
+            _ => {
+                self.errs.push(Error {
+                    message: format!("'{:?}' kọ́ ni oó yẹ kí oó wà níbí", op.kind),
+                    span: Span {
+                        st: self.peek_span().st.clone(),
+                        en: self.peek_span().en.clone(),
+                        file: self.file.clone(),
+                    },
+                });
+                
+                Expr { kind: ExprKind::Foo, span: self.zero_span.clone() }
+            }, // This shouldn't be reached anyway
         }
     }
 
-    fn parse_mutable_ident(&mut self) -> Result<Expr, ()> {
-        let var = self.expect_ident()?;
+    fn parse_mutable_ident(&mut self) -> Expr {
+        let var = self.expect_ident();
         let mut fields = vec![];
         while self.peek_kind() == Some(Token::Dot) {
             self.advance();
 
-            fields.push(self.expect_ident()?);
+            fields.push(self.expect_ident());
         }
 
         if fields.len() == 0 {
-            Ok(Expr {
+            Expr {
                 kind: ExprKind::MutableIdent {
                     var: var.clone(),
                     fields,
                 },
                 span: var.span,
-            })
+            }
         } else {
-            Ok(Expr {
+            Expr {
                 kind: ExprKind::MutableIdent {
                     var: var.clone(),
                     fields: fields.clone(),
@@ -5091,15 +5258,15 @@ impl Parser {
                     en: fields[fields.len() - 1].span.en,
                     file: self.file.clone(),
                 },
-            })
+            }
         }
     }
 
-    pub fn parse_expr(&mut self, min_prec: u8, is_pattern: bool) -> Result<Expr, ()> {
+    pub fn parse_expr(&mut self, min_prec: u8, is_pattern: bool) -> Expr {
         // THE PRECEDENCE CLIMBING ALGORITHM
         // 1. Parse prefix/primary via nud(null denotations)
 
-        let mut left = self.nud(is_pattern)?;
+        let mut left = self.nud(is_pattern);
         // 2. Parse infix/postfix in loop
         while let Some(op) = self.peek() {
             let prec = self.precedence(&op);
@@ -5110,20 +5277,20 @@ impl Parser {
             //Advance past the operator
             self.advance();
             // Dispatch to led(left denotation) handler
-            left = self.led(left, op, prec, is_pattern)?;
+            left = self.led(left, op, prec, is_pattern);
         }
 
-        Ok(left)
+        left
     }
 
-    fn global_helper(&mut self) -> Result<(TypeSpec, Ident, Expr, bool, StmtInfo), ()> {
+    fn global_helper(&mut self) -> (TypeSpec, Ident, Expr, bool, StmtInfo) {
         // Type: Single TypeHint | [TypeHint ,|. Number] | none
 
         let stm_st = self.peek_span().st.clone();
 
-        let ty = self.expect_typespec()?;
+        let ty = self.expect_typespec();
 
-        let name = self.expect_ident()?; // Check if there is an identifier, if there is, that is the name and there isn't, return an error
+        let name = self.expect_ident(); // Check if there is an identifier, if there is, that is the name and there isn't, return an error
 
         let public;
         let nxt = self.peek_kind();
@@ -5135,7 +5302,7 @@ impl Parser {
         }
         self.expect(&Token::Colon); // If the next isn't colon, return an error
 
-        let expr = self.parse_expr(0, false)?;
+        let expr = self.parse_expr(0, false);
 
         let stm_en = self.expect_newline().st;
 
@@ -5156,9 +5323,9 @@ impl Parser {
             }
         }
 
-        let docs = self.end_stmt_parse(self.is_expr_block(&value))?;
+        let docs = self.end_stmt_parse(self.is_expr_block(&value));
 
-        Ok((
+        (
             ty,
             name,
             value,
@@ -5171,10 +5338,10 @@ impl Parser {
                 },
                 docs,
             },
-        ))
+        )
     }
 
-    fn parse_global(&mut self) -> Result<TopLevel, ()> {
+    fn parse_global(&mut self) -> TopLevel {
         let stm_st = self.peek_span().st.clone();
         let interpret;
         if self.peek_kind() == Some(Token::Interpret) {
@@ -5203,7 +5370,7 @@ impl Parser {
                         }
                     }
 
-                    let res = self.global_helper()?;
+                    let res = self.global_helper();
                     let mut info = res.4;
                     info.span.st = stm_st;
                     arms.push((true, state, res.0, res.1, res.2, res.3, info));
@@ -5222,7 +5389,7 @@ impl Parser {
                     }
                 }
 
-                let res = self.global_helper()?;
+                let res = self.global_helper();
 
                 let mut info = res.4;
                 info.span.st = stm_st;
@@ -5275,10 +5442,10 @@ impl Parser {
             out = TopLevel::MultiGlobalDecl(t_ls);
         }
 
-        Ok(out)
+        out
     }
 
-    fn parse_a_method_def(&mut self, is_for_trait: bool) -> Result<Method, ()> {
+    fn parse_a_method_def(&mut self, is_for_trait: bool) -> Method {
         let stm_st = self.peek_span().st.clone();
 
         let mut ret_state = DataState::Owner;
@@ -5292,7 +5459,7 @@ impl Parser {
             }
         }
 
-        let expect = self.expect_typespec()?;
+        let expect = self.expect_typespec();
 
         let meth_self;
 
@@ -5322,7 +5489,7 @@ impl Parser {
         let is_public;
         let is_extern;
 
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
         // check for generic types
         let generics;
@@ -5335,7 +5502,7 @@ impl Parser {
                 let mut genr = Vec::new(); //the genr variable contains all the generics of Generic type
                 while self.peek_kind() != Some(Token::Greater) {
                     // in as much as the generit notation is not closed with >
-                    let name = self.expect_ident()?;
+                    let name = self.expect_ident();
                     self.expect(&Token::Colon); // <T:
 
                     let mut traits = Vec::new(); // this contains all the traits of the generic type
@@ -5345,7 +5512,7 @@ impl Parser {
                             self.advance();
                             while self.peek_kind() != Some(Token::RParen) {
                                 // as long is it's not yet closed with )
-                                traits.push(self.expect_ident()?); // add the identifier at current position to the traits
+                                traits.push(self.expect_ident()); // add the identifier at current position to the traits
                                                                    // <T: (Clone
                                 match self.peek_kind() {
                                     Some(Token::Comma) => {
@@ -5362,7 +5529,7 @@ impl Parser {
                         }
                         _ => {
                             traits.push(
-                                self.expect_ident()?, // <T: Clone
+                                self.expect_ident(), // <T: Clone
                             );
                         }
                     }
@@ -5392,7 +5559,7 @@ impl Parser {
             }
         }
 
-        let par_result = self.parse_func_params()?;
+        let par_result = self.parse_func_params();
         let par = par_result.0;
         let variadic = par_result.1;
 
@@ -5432,7 +5599,7 @@ impl Parser {
             stm_en = self.peek_span().en.clone();
 
             let abi_st = self.peek_span().st.clone();
-            let expr = self.parse_expr(0, false)?;
+            let expr = self.parse_expr(0, false);
             let abi_en = self.peek_span().en.clone();
             let abi;
 
@@ -5466,7 +5633,7 @@ impl Parser {
 
             is_extern = Some((abi, variadic));
 
-            docs = self.end_stmt_parse(false)?;
+            docs = self.end_stmt_parse(false);
 
             func_expr = None;
         } else {
@@ -5485,20 +5652,20 @@ impl Parser {
             match self.peek_kind() {
                 Some(Token::Colon) => {
                     self.advance();
-                    func_expr = Some(self.parse_expr(0, false)?);
+                    func_expr = Some(self.parse_expr(0, false));
                     stm_en = self.peek_span().en.clone();
 
-                    docs = self.end_stmt_parse(self.is_expr_block(func_expr.as_ref().unwrap()))?;
+                    docs = self.end_stmt_parse(self.is_expr_block(func_expr.as_ref().unwrap()));
                 }
                 _ => {
                     func_expr = None;
                     stm_en = self.peek_span().en.clone();
-                    docs = self.end_stmt_parse(false)?;
+                    docs = self.end_stmt_parse(false);
                 }
             }
         }
 
-        Ok(Method {
+        Method {
             worker_usage: vec![],
             meth_self: (
                 meth_self,
@@ -5526,10 +5693,10 @@ impl Parser {
                 },
                 docs,
             },
-        })
+        }
     }
 
-    fn parse_method_defs(&mut self, is_for_trait: bool) -> Result<(Vec<Method>, Pos), ()> {
+    fn parse_method_defs(&mut self, is_for_trait: bool) -> (Vec<Method>, Pos) {
         self.expect(&Token::ForwardArrow);
         let mut methods = Vec::new();
 
@@ -5538,14 +5705,14 @@ impl Parser {
         let en = Pos { column: 0, line: 0 };
         while self.peek_kind() != Some(Token::RBrace) {
             // -> {}
-            methods.push(self.parse_a_method_def(is_for_trait)?);
+            methods.push(self.parse_a_method_def(is_for_trait));
         }
         self.expect(&Token::RBrace);
 
-        Ok((methods, en))
+        (methods, en)
     }
 
-    fn parse_cust_ty_associateds(&mut self) -> Result<Vec<CustTyAss>, ()> {
+    fn parse_cust_ty_associateds(&mut self) -> Vec<CustTyAss> {
         self.expect(&Token::ForwardArrow);
         let mut ass = Vec::new();
 
@@ -5555,7 +5722,7 @@ impl Parser {
             // -> {}
             match self.peek_kind() {
                 Some(Token::Function) => {
-                    let func = self.parse_func(false)?;
+                    let func = self.parse_func(false);
 
                     match func {
                         TopLevel::FuncDecl {
@@ -5596,7 +5763,7 @@ impl Parser {
                     }
                 }
                 _ => {
-                    let method = self.parse_a_method_def(false)?;
+                    let method = self.parse_a_method_def(false);
 
                     ass.push(CustTyAss::Method(method));
                 }
@@ -5604,10 +5771,10 @@ impl Parser {
         }
         self.expect(&Token::RBrace);
 
-        Ok(ass)
+        ass
     }
 
-    fn parse_bridge(&mut self) -> Result<TopLevel, ()> {
+    fn parse_bridge(&mut self) -> TopLevel {
         let stm_st = self.peek_span().st.clone();
         let mut _public = false;
 
@@ -5624,24 +5791,24 @@ impl Parser {
             }
         }
 
-        let ass_type = self.expect_typespec()?;
+        let ass_type = self.expect_typespec();
 
-        let ass_ident = self.expect_ident()?;
+        let ass_ident = self.expect_ident();
 
         self.expect(&Token::To);
 
-        let new_ty = self.expect_ident()?;
+        let new_ty = self.expect_ident();
 
         self.expect(&Token::Colon);
 
-        let block = self.parse_expr(0, false)?;
+        let block = self.parse_expr(0, false);
 
         let stm_en = self.peek_span().en.clone();
 
-        let docs = self.end_stmt_parse(self.is_expr_block(&block))?;
+        let docs = self.end_stmt_parse(self.is_expr_block(&block));
         self.reverse();
         // It has to reverse, because it always return Err(()) which advances by default
-        Err(self.bridges.push(BridgeDecl {
+        self.bridges.push(BridgeDecl {
             ass_state,
             ass_type,
             ass_ident,
@@ -5656,11 +5823,13 @@ impl Parser {
                 },
                 docs,
             },
-        }))
+        });
+
+        TopLevel::Foo
     }
 
-    fn parse_enum_variants(&mut self) -> Result<EnumVariants, ()> {
-        let name = self.expect_ident()?;
+    fn parse_enum_variants(&mut self) -> EnumVariants {
+        let name = self.expect_ident();
         let mut form = EnumVariantFormat::Simple;
 
         match self.peek_kind() {
@@ -5676,16 +5845,16 @@ impl Parser {
         }
 
         if form == EnumVariantFormat::Simple {
-            Ok(EnumVariants::Simple(name))
+            EnumVariants::Simple(name)
         } else if form == EnumVariantFormat::Struct {
-            Ok(self.parse_struct_variant(name)?)
+            self.parse_struct_variant(name)
         } else {
             // Tuple
-            Ok(self.parse_tuple_variant(name)?)
+            self.parse_tuple_variant(name)
         }
     }
 
-    fn parse_tuple_variant(&mut self, name: Ident) -> Result<EnumVariants, ()> {
+    fn parse_tuple_variant(&mut self, name: Ident) -> EnumVariants {
         let mut fields = Vec::new();
 
         while self.peek_kind() != Some(Token::RParen) {
@@ -5701,10 +5870,10 @@ impl Parser {
                         state = DataState::ImutRef;
                     }
 
-                    fields.push((state, self.expect_typespec()?));
+                    fields.push((state, self.expect_typespec()));
                 }
                 _ => {
-                    fields.push((DataState::Owner, self.expect_typespec()?));
+                    fields.push((DataState::Owner, self.expect_typespec()));
                 }
             }
 
@@ -5715,10 +5884,10 @@ impl Parser {
 
         self.expect(&Token::RParen);
 
-        Ok(EnumVariants::Tuple { name, fields })
+        EnumVariants::Tuple { name, fields }
     }
 
-    fn parse_struct_variant(&mut self, name: Ident) -> Result<EnumVariants, ()> {
+    fn parse_struct_variant(&mut self, name: Ident) -> EnumVariants {
         let mut fields = Vec::new();
 
         while self.peek_kind() != Some(Token::RBrace) {
@@ -5733,8 +5902,8 @@ impl Parser {
                 }
             }
 
-            let ty = self.expect_typespec()?;
-            let ident = self.expect_ident()?;
+            let ty = self.expect_typespec();
+            let ident = self.expect_ident();
 
             fields.push(Parameter { ident, state, ty });
 
@@ -5744,18 +5913,18 @@ impl Parser {
         }
         self.expect(&Token::RBrace);
 
-        Ok(EnumVariants::Record { name, fields })
+        EnumVariants::Record { name, fields }
     }
 
-    fn parse_enum(&mut self) -> Result<TopLevel, ()> {
+    fn parse_enum(&mut self) -> TopLevel {
         let mut _public = false;
         let stm_init = self.init_stm(&Token::Enum);
 
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
         // check for generic types
         let generic_types;
-        let from_genr_def = self.get_def_generics()?;
+        let from_genr_def = self.get_def_generics();
         if from_genr_def.is_some() {
             generic_types = from_genr_def.unwrap();
         } else {
@@ -5773,34 +5942,34 @@ impl Parser {
         let mut vals = Vec::new();
 
         while self.peek_kind() != Some(Token::RBrace) {
-            vals.push(self.parse_enum_variants()?);
+            vals.push(self.parse_enum_variants());
 
             match self.peek_kind() {
                 Some(Token::Comma) => {
                     self.advance();
                 }
                 Some(Token::Identifier(ref _s)) => {
-                    return Err(self.errs.push(Error {
+                    self.errs.push(Error {
                         message: format!("Fi ',' dá wọn láàrin"),
                         span: Span {
                             st: self.peek_span().st.clone(),
                             en: self.peek_span().en.clone(),
                             file: self.file.clone(),
                         },
-                    }));
+                    });
                 }
                 Some(_oth) => {
                     break;
                 }
                 None => {
-                    return Err(self.errs.push(Error {
+                    self.errs.push(Error {
                         message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
                         span: Span {
                             st: self.peek_span().st.clone(),
                             en: self.peek_span().en.clone(),
                             file: self.file.clone(),
                         },
-                    }));
+                    });
                 }
             }
         }
@@ -5809,16 +5978,16 @@ impl Parser {
 
         let associateds;
         if self.peek_kind() == Some(Token::ForwardArrow) {
-            let ass_result = self.parse_cust_ty_associateds()?;
+            let ass_result = self.parse_cust_ty_associateds();
 
             associateds = ass_result;
         } else {
             associateds = vec![];
         }
 
-        let docs = self.end_stmt_parse(associateds.len() > 0)?;
+        let docs = self.end_stmt_parse(associateds.len() > 0);
 
-        Ok(TopLevel::EnumDecl {
+        TopLevel::EnumDecl {
             ident,
             generic_types,
             vals,
@@ -5834,10 +6003,10 @@ impl Parser {
                 },
                 docs,
             },
-        })
+        }
     }
 
-    fn parse_struct_params(&mut self) -> Result<Vec<StructParam>, ()> {
+    fn parse_struct_params(&mut self) -> Vec<StructParam> {
         let mut params = Vec::new();
 
         while self.peek_kind() != Some(Token::RBrace) {
@@ -5852,8 +6021,8 @@ impl Parser {
                 }
             }
 
-            let ty = self.expect_typespec()?;
-            let ident = self.expect_ident()?;
+            let ty = self.expect_typespec();
+            let ident = self.expect_ident();
 
             let is_public;
             match self.peek_kind() {
@@ -5880,40 +6049,40 @@ impl Parser {
                     break;
                 }
                 Some(oth) => {
-                    return Err(self.errs.push(Error {
+                    self.errs.push(Error {
                         message: format!(" '}}' ni oó yẹ kí oó wà níbí dípò '{:?}'", oth),
                         span: Span {
                             st: self.peek_span().st.clone(),
                             en: self.peek_span().en.clone(),
                             file: self.file.clone(),
                         },
-                    }));
+                    });
                 }
                 None => {
-                    return Err(self.errs.push(Error {
+                    self.errs.push(Error {
                         message: format!("Kò tíì yẹ kí fáílì yìí'ó dópìn-in níbí"),
                         span: Span {
                             st: self.peek_span().st.clone(),
                             en: self.peek_span().en.clone(),
                             file: self.file.clone(),
                         },
-                    }));
+                    });
                 }
             }
         }
 
-        Ok(params)
+        params
     }
 
-    fn parse_struct(&mut self) -> Result<TopLevel, ()> {
+    fn parse_struct(&mut self) -> TopLevel {
         let mut public = false;
         let struct_init = self.init_stm(&Token::Struct);
 
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
         // check for generic types
         let generic_types;
-        let from_genr_def = self.get_def_generics()?;
+        let from_genr_def = self.get_def_generics();
         if from_genr_def.is_some() {
             generic_types = from_genr_def.unwrap();
         } else {
@@ -5928,20 +6097,20 @@ impl Parser {
 
         self.expect(&Token::LBrace);
 
-        let vals = self.parse_struct_params()?;
+        let vals = self.parse_struct_params();
 
         let associateds;
         if self.peek_kind() == Some(Token::ForwardArrow) {
-            let ass_result = self.parse_cust_ty_associateds()?;
+            let ass_result = self.parse_cust_ty_associateds();
 
             associateds = ass_result;
         } else {
             associateds = vec![];
         }
 
-        let docs = self.end_stmt_parse(associateds.len() > 0)?;
+        let docs = self.end_stmt_parse(associateds.len() > 0);
 
-        Ok(TopLevel::StructDecl {
+        TopLevel::StructDecl {
             ident,
             generic_types,
             vals,
@@ -5957,19 +6126,19 @@ impl Parser {
                 },
                 docs,
             },
-        })
+        }
     }
 
-    fn parse_worker(&mut self) -> Result<TopLevel, ()> {
+    fn parse_worker(&mut self) -> TopLevel {
         // worker is decorator
         let stm_st = self.peek_span().st.clone();
         let mut public = false;
         self.init_stm(&Token::Worker);
 
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
         self.expect(&Token::LParen);
-        let func_name = self.expect_ident()?;
+        let func_name = self.expect_ident();
         self.expect(&Token::RParen);
 
         let nxt = self.peek_kind();
@@ -5979,11 +6148,12 @@ impl Parser {
         }
 
         self.expect(&Token::LBrace);
-        let from_block = self.parse_stmts()?;
+        let from_block = self.parse_stmts();
         let block = from_block.0;
         let stm_en = from_block.1;
-        let docs = self.end_stmt_parse(true)?;
-        Ok(TopLevel::WorkerDef {
+        let docs = self.end_stmt_parse(true);
+        
+        TopLevel::WorkerDef {
             ident,
             func_name,
             public,
@@ -5996,15 +6166,15 @@ impl Parser {
                 },
                 docs,
             },
-        })
+        }
     }
 
-    fn parse_static(&mut self) -> Result<TopLevel, ()> {
+    fn parse_static(&mut self) -> TopLevel {
         let stm_st = self.peek_span().st.clone();
         let mut public = false;
         self.init_stm(&Token::Static);
 
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
         let nxt = self.peek_kind();
         if nxt == Some(Token::Public) {
@@ -6025,7 +6195,7 @@ impl Parser {
 
         while self.peek_kind() != Some(Token::RBrace) {
             let start_span = self.peek_span().clone();
-            let element = self.parse_toplevel(false)?;
+            let element = self.parse_toplevel(false);
             match element.clone() {
                 TopLevel::WorkerUsage { workers, info } => {
                     self.worker_usages = // this field is checked for every statement being parsed
@@ -6305,13 +6475,14 @@ impl Parser {
                         message: format!("Static alápètúpè(recursive) is not allowed"),
                         span: start_span.clone(),
                     });
-                } // TopLevel::Foo => ()
+                }
+                TopLevel::Foo => ()
             }
         }
         let stm_en = self.peek_span().en.clone();
         self.expect(&Token::RBrace);
 
-        let docs = self.end_stmt_parse(true)?;
+        let docs = self.end_stmt_parse(true);
 
         let block = CustomBlock {
             takes,
@@ -6325,7 +6496,7 @@ impl Parser {
             static_defs: vec![],
         };
 
-        Ok(TopLevel::StaticDef {
+        TopLevel::StaticDef {
             ident,
             public,
             block: block,
@@ -6337,10 +6508,10 @@ impl Parser {
                 },
                 docs,
             },
-        })
+        }
     }
 
-    fn parse_worker_usage(&mut self) -> Result<TopLevel, ()> {
+    fn parse_worker_usage(&mut self) -> TopLevel {
         let stm_st = self.peek_span().st.clone();
         self.expect(&Token::NumSign);
 
@@ -6348,7 +6519,7 @@ impl Parser {
         let mut workers = vec![];
 
         while self.peek_kind() != Some(Token::RBracket) {
-            workers.push(self.expect_ident()?);
+            workers.push(self.expect_ident());
             match self.peek_kind() {
                 Some(Token::Comma) => {
                     self.advance();
@@ -6364,7 +6535,7 @@ impl Parser {
 
         let stm_en = self.peek_span().st;
 
-        Ok(TopLevel::WorkerUsage {
+        TopLevel::WorkerUsage {
             workers,
             info: StmtInfo {
                 span: Span {
@@ -6372,24 +6543,24 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(false)?,
+                docs: self.end_stmt_parse(false),
             },
-        })
+        }
     }
 
-    fn parse_trait(&mut self) -> Result<TopLevel, ()> {
+    fn parse_trait(&mut self) -> TopLevel {
         let stm_st = self.peek_span().st.clone();
         let is_public;
         self.init_stm(&Token::Trait);
 
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
         // check for generics
         let generic_types;
         match self.peek_kind() {
             Some(Token::Less) => {
                 self.advance();
-                generic_types = Some(self.expect_ident()?);
+                generic_types = Some(self.expect_ident());
                 self.expect(&Token::Greater);
             }
             _ => generic_types = None,
@@ -6408,7 +6579,7 @@ impl Parser {
         match self.peek_kind() {
             Some(Token::Interpret) => {
                 self.expect(&Token::LBrace);
-                interprets = self.parse_stmts()?.0;
+                interprets = self.parse_stmts().0;
             }
             _ => {
                 interprets = vec![];
@@ -6420,7 +6591,7 @@ impl Parser {
 
         let methods;
         if self.peek_kind() == Some(Token::ForwardArrow) {
-            let methods_result = self.parse_method_defs(true)?;
+            let methods_result = self.parse_method_defs(true);
 
             methods = methods_result.0;
             stm_en = methods_result.1;
@@ -6428,7 +6599,7 @@ impl Parser {
             methods = vec![];
         }
 
-        Ok(TopLevel::TraitDef {
+        TopLevel::TraitDef {
             ident,
             generic_types,
             interprets,
@@ -6440,56 +6611,62 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(false)?,
+                docs: self.end_stmt_parse(false),
             },
-        })
+        }
     }
 
-    fn get_frag_kind(&mut self) -> Result<FragKind, ()> {
+    fn get_frag_kind(&mut self) -> FragKind {
         match self.peek_kind() {
             Some(Token::Identifier(i)) => {
                 self.advance();
                 if i == String::from("ry") {
-                    Ok(FragKind::AnyType)
+                    FragKind::AnyType
                 } else if i == String::from("àfipè") {
-                    Ok(FragKind::Ident)
+                    FragKind::Ident
                 } else if i == String::from("ìtúpayá") {
-                    Ok(FragKind::Expr)
+                    FragKind::Expr
                 } else {
-                    Ok(FragKind::Custom(i))
+                    FragKind::Custom(i)
                 }
             }
             Some(Token::TypeHint(t)) => {
                 self.advance();
                 if t == String::from("ọsán") {
-                    Ok(FragKind::String)
+                    FragKind::String
                 } else if t == String::from("ǹjẹ́") {
-                    Ok(FragKind::Bool)
+                    FragKind::Bool
                 } else {
-                    Err(self.errs.push(Error {
+                    self.errs.push(Error {
                         message: format!("kò sí irú ẹṣà tí oó ń jé {t}"),
                         span: Span {
                             st: self.peek_span().st.clone(),
                             en: self.peek_span().en.clone(),
                             file: self.file.clone(),
                         },
-                    }))
+                    });
+
+                    FragKind::Type
                 }
             }
-            _ => Err(self.errs.push(Error {
-                message: format!("Irú tókìn tí oó bá jé ni kí o kọ síbí"),
-                span: Span {
-                    st: self.peek_span().st.clone(),
-                    en: self.peek_span().en.clone(),
-                    file: self.file.clone(),
-                },
-            })),
+            _ => {
+                self.errs.push(Error {
+                    message: format!("Irú tókìn tí oó bá jé ni kí o kọ síbí"),
+                    span: Span {
+                        st: self.peek_span().st.clone(),
+                        en: self.peek_span().en.clone(),
+                        file: self.file.clone(),
+                    },
+                });
+                
+                FragKind::Type
+            },
         }
     }
 
-    fn parse_macro_pattern(&mut self) -> Result<MacroPatt, ()> {
+    fn parse_macro_pattern(&mut self) -> MacroPatt {
         // this function passes a single Macro Pattern; like Fragment e.t.c
-        let pattern;
+        let mut pattern = MacroPatt::Foo;
 
         match self.peek() {
             Some(FullTok {
@@ -6502,9 +6679,9 @@ impl Parser {
                 match self.peek_kind() {
                     Some(Token::Identifier(_) | Token::TypeHint(_)) => {
                         // a fragment
-                        let kind = self.get_frag_kind()?;
+                        let kind = self.get_frag_kind();
 
-                        let name = self.expect_ident()?;
+                        let name = self.expect_ident();
 
                         pattern = MacroPatt::Fragment { name, kind };
                     }
@@ -6512,7 +6689,7 @@ impl Parser {
                         // a repetition
                         self.advance();
 
-                        let pttn = self.parse_macro_pattern()?;
+                        let pttn = self.parse_macro_pattern();
 
                         self.expect(&Token::RParen);
                         let seperator;
@@ -6558,26 +6735,30 @@ impl Parser {
                                         operator = RepOperator::Optional;
                                     }
                                     _ => {
-                                        return Err(self.errs.push(Error {
+                                        self.errs.push(Error {
                                             message: format!("Lo *, + tàbí ?:\n"),
                                             span: Span {
                                                 st: self.peek_span().st.clone(),
                                                 en: self.peek_span().en.clone(),
                                                 file: self.file.clone(),
                                             },
-                                        }));
+                                        });
+                                        operator = RepOperator::OnceOrMore;
                                     }
                                 }
                             }
                             None => {
-                                return Err(self.errs.push(Error {
+                                self.errs.push(Error {
                                     message: format!("Lo *, + tàbí ?:\n"),
                                     span: Span {
                                         st: self.peek_span().st.clone(),
                                         en: self.peek_span().en.clone(),
                                         file: self.file.clone(),
                                     },
-                                }));
+                                });
+
+                                seperator = None;
+                                operator = RepOperator::OnceOrMore;
                             }
                         }
 
@@ -6588,14 +6769,14 @@ impl Parser {
                         }
                     }
                     _ => {
-                        return Err(self.errs.push(Error {
+                        self.errs.push(Error {
                             message: format!("Lo *, + tàbí ?:\n"),
                             span: Span {
                                 st: self.peek_span().st.clone(),
                                 en: self.peek_span().en.clone(),
                                 file: self.file.clone(),
                             },
-                        }));
+                        });
                     }
                 }
             }
@@ -6604,7 +6785,7 @@ impl Parser {
                 span: _,
             }) => {
                 // to create another group
-                let group = self.parse_macro_group()?;
+                let group = self.parse_macro_group();
                 let delim = group.delim;
                 let items = group.items;
                 pattern = MacroPatt::Group { delim, items };
@@ -6614,25 +6795,32 @@ impl Parser {
                 pattern = MacroPatt::Literal(literal);
             }
             None => {
-                pattern = MacroPatt::Foo;
+                self.errs.push(Error {
+                    message: format!("Ko yẹ kí fáílì yìí-ó tíì parí níbí"),
+                    span: Span {
+                        st: self.peek_span().st.clone(),
+                        en: self.peek_span().en.clone(),
+                        file: self.file.clone(),
+                    },
+                });
             }
         }
 
-        if pattern == MacroPatt::Foo {
-            self.errs.push(Error {
-                message: format!("Ko yẹ kí fáílì yìí-ó tíì parí níbí"),
-                span: Span {
-                    st: self.peek_span().st.clone(),
-                    en: self.peek_span().en.clone(),
-                    file: self.file.clone(),
-                },
-            })
-        }
+        // if pattern == MacroPatt::Foo {
+        //     self.errs.push(Error {
+        //         message: format!("Ko yẹ kí fáílì yìí-ó tíì parí níbí"),
+        //         span: Span {
+        //             st: self.peek_span().st.clone(),
+        //             en: self.peek_span().en.clone(),
+        //             file: self.file.clone(),
+        //         },
+        //     });
+        // }
 
-        Ok(pattern)
+        pattern
     }
 
-    fn parse_macro_group(&mut self) -> Result<MacroGroup, ()> {
+    fn parse_macro_group(&mut self) -> MacroGroup {
         let delim;
         let mut items = vec![];
 
@@ -6640,21 +6828,21 @@ impl Parser {
             delim = Delimiter::Paren;
             self.advance();
             while self.peek_kind() != Some(Token::RParen) {
-                items.push(self.parse_macro_pattern()?); // parse one pattern after the other
+                items.push(self.parse_macro_pattern()); // parse one pattern after the other
             }
             self.advance();
         } else if self.peek_kind() == Some(Token::LBracket) {
             delim = Delimiter::Bracket;
             self.advance();
             while self.peek_kind() != Some(Token::RBracket) {
-                items.push(self.parse_macro_pattern()?);
+                items.push(self.parse_macro_pattern());
             }
             self.advance();
         } else if self.peek_kind() == Some(Token::LBrace) {
             delim = Delimiter::Brace;
             self.advance();
             while self.peek_kind() != Some(Token::RBrace) {
-                items.push(self.parse_macro_pattern()?);
+                items.push(self.parse_macro_pattern());
             }
             self.advance();
         } else {
@@ -6669,14 +6857,14 @@ impl Parser {
             }));
         }
 
-        Ok(MacroGroup { delim, items })
+        MacroGroup { delim, items }
     }
 
-    fn parse_macro(&mut self) -> Result<TopLevel, ()> {
+    fn parse_macro(&mut self) -> TopLevel {
         let stm_st = self.peek_span().st.clone();
         self.init_stm(&Token::Macro);
 
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
         let is_public;
         let nxt = self.peek_kind();
@@ -6693,7 +6881,7 @@ impl Parser {
         while self.peek_kind() != Some(Token::RBrace) {
             let arm_st = self.peek_span().st.clone();
 
-            let pattern = self.parse_macro_group()?;
+            let pattern = self.parse_macro_group();
 
             self.expect(&Token::Colon);
 
@@ -6770,7 +6958,7 @@ impl Parser {
                         en: arm_en,
                         file: self.file.clone(),
                     },
-                    docs: self.end_stmt_parse(true)?,
+                    docs: self.end_stmt_parse(true),
                 },
             });
         }
@@ -6778,7 +6966,7 @@ impl Parser {
         let stm_en = self.peek_span().en.clone();
         self.advance(); // consume }
 
-        Ok(TopLevel::MacroDef {
+        TopLevel::MacroDef {
             ident,
             is_public,
             cases,
@@ -6788,12 +6976,12 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(true)?,
+                docs: self.end_stmt_parse(true),
             },
-        })
+        }
     }
 
-    fn parse_func_params(&mut self) -> Result<(Vec<InterfaceParam>, Option<Span>), ()> {
+    fn parse_func_params(&mut self) -> (Vec<InterfaceParam>, Option<Span>) {
         self.expect(&Token::LParen);
         let mut params = Vec::new();
         let mut is_variadic = None;
@@ -6808,14 +6996,14 @@ impl Parser {
                     span,
                 }) => {
                     self.advance();
-                    // itú 8d wá_iye(...) látòde "C"
+                    // iṣẹ́ 8d wá_iye(...) látòde "C"
                     self.expect(&Token::RParen);
                     self.reverse();
                     is_variadic = Some(span);
                     break;
                 }
                 _ => {
-                    let param = self.expect_param()?;
+                    let param = self.expect_param();
                     let t = self.peek();
 
                     match t {
@@ -6880,10 +7068,10 @@ impl Parser {
         }
 
         self.advance();
-        Ok((params, is_variadic))
+        (params, is_variadic)
     }
 
-    fn get_def_generics(&mut self) -> Result<Option<Vec<Generic>>, ()> {
+    fn get_def_generics(&mut self) -> Option<Vec<Generic>> {
         let generics;
 
         match self.peek_kind() {
@@ -6894,7 +7082,7 @@ impl Parser {
                 let mut genr = Vec::new(); //the genr variable contains all the generics of Generic type
                 while self.peek_kind() != Some(Token::Greater) {
                     // in as much as the generit notation is not closed with >
-                    let name = self.expect_ident()?;
+                    let name = self.expect_ident();
                     let mut traits = Vec::new(); // this contains all the traits of the generic type
 
                     match self.peek_kind() {
@@ -6907,7 +7095,7 @@ impl Parser {
                                     self.advance();
                                     while self.peek_kind() != Some(Token::RParen) {
                                         // as long is it's not yet closed with )
-                                        traits.push(self.expect_ident()?); // add the identifier at current position to the traits
+                                        traits.push(self.expect_ident()); // add the identifier at current position to the traits
                                                                            // <T: (Clone
                                         match self.peek_kind() {
                                             Some(Token::Comma) => {
@@ -6924,7 +7112,7 @@ impl Parser {
                                 }
                                 _ => {
                                     traits.push(
-                                        self.expect_ident()?, // <T: Clone
+                                        self.expect_ident(), // <T: Clone
                                     );
                                 }
                             }
@@ -6957,10 +7145,10 @@ impl Parser {
             }
         }
 
-        Ok(generics)
+        generics
     }
 
-    fn parse_func(&mut self, is_platform: bool) -> Result<TopLevel, ()> {
+    fn parse_func(&mut self, is_platform: bool) -> TopLevel {
         let public;
         let visible;
         let is_extern;
@@ -6986,14 +7174,14 @@ impl Parser {
             }
         }
 
-        let expect = self.expect_typespec()?;
+        let expect = self.expect_typespec();
 
-        let ident = self.expect_ident()?; // Check if there is an identifier, if there is, that is the name and there isn't, return an error
+        let ident = self.expect_ident(); // Check if there is an identifier, if there is, that is the name and there isn't, return an error
 
         // check for generic types
-        let generics = self.get_def_generics()?;
+        let generics = self.get_def_generics();
 
-        let from_params = self.parse_func_params()?;
+        let from_params = self.parse_func_params();
         let params = from_params.0;
         let variadic = from_params.1;
 
@@ -7029,7 +7217,7 @@ impl Parser {
             stm_en = self.peek_span().en.clone();
 
             let abi_st = self.peek_span().st.clone();
-            let expr = self.parse_expr(0, false)?;
+            let expr = self.parse_expr(0, false);
             let abi_en = self.peek_span().en.clone();
             let abi;
 
@@ -7090,7 +7278,7 @@ impl Parser {
 
             self.expect(&Token::Colon);
 
-            items = self.parse_expr(0, false)?;
+            items = self.parse_expr(0, false);
 
             stm_en = self.peek_span().en.clone();
         }
@@ -7101,10 +7289,10 @@ impl Parser {
             Ident { ident: i, span } => {
                 if i == String::from("gbòógì") {
                     if is_async {
-                        return Err(self.errs.push(Error {
+                        self.errs.push(Error {
                             message: format!("Ọ 'ò lè lo tàṣé fún itú gbòógì"),
                             span: span.clone(),
-                        }));
+                        });
                     }
                     if self.is_entry {
                         if params.is_empty() {
@@ -7125,18 +7313,21 @@ impl Parser {
                                 })
                             }
                             if items.kind == ExprKind::Foo {
-                                Err(self.errs.push(Error {
+                                self.errs.push(Error {
                                     message: format!("The main function most have a body"),
                                     span: span.clone(),
-                                }))
+                                });
+                                TopLevel::Foo
                             } else {
                                 if is_platform {
-                                    Err(self.errs.push(Error {
+                                    self.errs.push(Error {
                                         message: format!("isẹ́ gbòógì-ò lè wà níbí"),
                                         span: span.clone(),
-                                    }))
+                                    });
+
+                                    TopLevel::Foo
                                 } else {
-                                    Ok(TopLevel::Entry {
+                                    TopLevel::Entry {
                                         ident,
                                         info: StmtInfo {
                                             span: Span {
@@ -7145,28 +7336,32 @@ impl Parser {
                                                 file: self.file.clone(),
                                             },
                                             docs: self
-                                                .end_stmt_parse(self.is_expr_block(&items))?,
+                                                .end_stmt_parse(self.is_expr_block(&items)),
                                         },
                                         expect,
                                         worker_usage: func_init.0,
                                         block: items,
-                                    })
+                                    }
                                 }
                             }
                         } else {
-                            Err(self.errs.push(Error {
+                            self.errs.push(Error {
                                 message: format!("Iṣé gbòógì-ò nílò parameter kan-kan "),
                                 span: span.clone(),
-                            }))
+                            });
+
+                            TopLevel::Foo
                         }
                     } else {
-                        Err(self.errs.push(Error {
+                        self.errs.push(Error {
                             message: format!("Inú fáílì àbáwọlé nìkan ni itú gbòógì lè wà"),
                             span: span.clone(),
-                        }))
+                        });
+
+                        TopLevel::Foo
                     }
                 } else {
-                    Ok(TopLevel::FuncDecl {
+                    TopLevel::FuncDecl {
                         is_async,
                         expect,
                         ret_state,
@@ -7183,18 +7378,18 @@ impl Parser {
                                 en: stm_en,
                                 file: self.file.clone(),
                             },
-                            docs: self.end_stmt_parse(self.is_expr_block(&items))?,
+                            docs: self.end_stmt_parse(self.is_expr_block(&items)),
                         },
                         block: items,
-                    })
+                    }
                 }
             }
         }
     }
 
-    fn parse_platform(&mut self) -> Result<TopLevel, ()> {
+    fn parse_platform(&mut self) -> TopLevel {
         // it's just like a match statement, only not exactly
-        let st= self.init_stm(&Token::Target).1;
+        let st = self.init_stm(&Token::Target).1;
 
         let mut arms = vec![];
 
@@ -7203,7 +7398,7 @@ impl Parser {
             let b_st = self.peek_span().st.clone(); //
 
             // type checker will check is the patterns are correct
-            let target = self.parse_expr(0, true)?;
+            let target = self.parse_expr(0, true);
 
             // let en = self.peek_span().en.clone();
             self.expect(&Token::Colon);
@@ -7224,7 +7419,7 @@ impl Parser {
             while self.peek_kind() != Some(Token::RBrace) {
                 // at toplevel, platform statement can only supports global variables, function, and macro definations
                 let st = self.peek_span().st.clone();
-                let top_level = self.parse_toplevel(true)?;
+                let top_level = self.parse_toplevel(true);
                 let en = self.peek_span().en.clone();
 
                 match top_level {
@@ -7315,6 +7510,7 @@ impl Parser {
                             info,
                         });
                     }
+                    TopLevel::Foo => (), // Err(s) aleady handled
                     _ => {
                         self.errs.push(Error {
                             message: format!(
@@ -7346,7 +7542,7 @@ impl Parser {
 
         self.expect(&Token::RBrace);
 
-        Ok(TopLevel::PlatformNS {
+        TopLevel::PlatformNS {
             arms,
             info: StmtInfo {
                 span: Span {
@@ -7354,9 +7550,9 @@ impl Parser {
                     en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(true)?,
+                docs: self.end_stmt_parse(true),
             },
-        })
+        }
     }
 
     // fn parse_macro_use(&mut self) -> Result<TopLevel, ()> {
@@ -7399,13 +7595,13 @@ impl Parser {
 
     // BLOCKLEVEL
 
-    fn var_helper(&mut self) -> Result<(TypeSpec, Ident, Expr, bool, StmtInfo), ()> {
+    fn var_helper(&mut self) -> (TypeSpec, Ident, Expr, bool, StmtInfo) {
         let stm_st = self.peek_span().st.clone();
         let mutable;
 
-        let ty = self.expect_typespec()?;
+        let ty = self.expect_typespec();
 
-        let name = self.expect_ident()?; // Check if there is an identifier, if there is, that is the name and there isn't, return an error
+        let name = self.expect_ident(); // Check if there is an identifier, if there is, that is the name and there isn't, return an error
 
         let nxt = self.peek_kind();
         if nxt == Some(Token::Mut) {
@@ -7416,13 +7612,13 @@ impl Parser {
         }
         self.expect(&Token::Colon); // If the next isn't colon, return an error
 
-        let value = self.parse_expr(0, false)?;
+        let value = self.parse_expr(0, false);
 
         let stm_en = self.peek_span().en.clone();
 
-        let docs = self.end_stmt_parse(self.is_expr_block(&value))?;
+        let docs = self.end_stmt_parse(self.is_expr_block(&value));
 
-        Ok((
+        (
             ty,
             name,
             value,
@@ -7435,16 +7631,16 @@ impl Parser {
                 },
                 docs,
             },
-        ))
+        )
     }
 
-    fn uninit_var_helper(&mut self) -> Result<(TypeSpec, Ident, bool, StmtInfo), ()> {
+    fn uninit_var_helper(&mut self) -> (TypeSpec, Ident, bool, StmtInfo) {
         let stm_st = self.peek_span().st.clone();
         let mutable;
 
-        let ty = self.expect_typespec()?;
+        let ty = self.expect_typespec();
 
-        let name = self.expect_ident()?; // Check if there is an identifier, if there is, that is the name and there isn't, return an error
+        let name = self.expect_ident(); // Check if there is an identifier, if there is, that is the name and there isn't, return an error
 
         let nxt = self.peek_kind();
         if nxt == Some(Token::Mut) {
@@ -7467,13 +7663,13 @@ impl Parser {
                 en: stm_en,
                 file: self.file.clone(),
             },
-            docs: self.end_stmt_parse(false)?,
+            docs: self.end_stmt_parse(false),
         };
 
-        Ok((ty, name, mutable, info))
+        (ty, name, mutable, info)
     }
 
-    fn parse_uninit_var(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_uninit_var(&mut self) -> BlockLevel {
         let stm_st = self.peek_span().st.clone();
         self.expect(&Token::Have); // checks, then advance if true
 
@@ -7493,7 +7689,7 @@ impl Parser {
                         }
                     }
 
-                    let res = self.uninit_var_helper()?;
+                    let res = self.uninit_var_helper();
                     let info = res.3;
 
                     uninits.push(Box::new(BlockLevel::UnInitVarDecl {
@@ -7505,7 +7701,7 @@ impl Parser {
                     }));
                 }
                 self.advance();
-                Ok(BlockLevel::MultiUnInitVarDecl(uninits))
+                BlockLevel::MultiUnInitVarDecl(uninits)
             }
             _ => {
                 let mut state = DataState::Owner;
@@ -7519,22 +7715,22 @@ impl Parser {
                     }
                 }
 
-                let res = self.uninit_var_helper()?;
+                let res = self.uninit_var_helper();
 
                 let mut info = res.3;
                 info.span.st = stm_st;
-                Ok(BlockLevel::UnInitVarDecl {
+                BlockLevel::UnInitVarDecl {
                     state,
                     ty: res.0,
                     name: res.1,
                     mutable: res.2,
                     info,
-                })
+                }
             }
         }
     }
 
-    fn parse_var(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_var(&mut self) -> BlockLevel {
         let stm_st = self.peek_span().st.clone();
 
         let interpret;
@@ -7563,7 +7759,7 @@ impl Parser {
                         }
                     }
 
-                    let res = self.var_helper()?;
+                    let res = self.var_helper();
                     let mut info = res.4;
                     info.span.st = stm_st;
                     // add checks for:
@@ -7582,7 +7778,7 @@ impl Parser {
                     }));
                 }
                 self.advance();
-                Ok(BlockLevel::MultiVarDecl(globs))
+                BlockLevel::MultiVarDecl(globs)
             }
             _ => {
                 let mut state = DataState::Owner;
@@ -7596,12 +7792,12 @@ impl Parser {
                     }
                 }
 
-                let res = self.var_helper()?;
+                let res = self.var_helper();
 
                 let mut info = res.4;
                 info.span.st = stm_st;
 
-                Ok(BlockLevel::VarDecl {
+                BlockLevel::VarDecl {
                     interpret,
                     state,
                     ty: res.0,
@@ -7609,17 +7805,17 @@ impl Parser {
                     value: res.2,
                     mutable: res.3,
                     info,
-                })
+                }
             }
         }
     }
 
-    fn parse_reassign(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_reassign(&mut self) -> BlockLevel {
         let stm_st = self.peek_span().st.clone();
 
         self.expect(&Token::Assign);
 
-        let to_mut = self.parse_mutable_ident()?;
+        let to_mut = self.parse_mutable_ident();
 
         let assign_op;
 
@@ -7651,11 +7847,11 @@ impl Parser {
 
         self.expect(&Token::Colon);
 
-        let val = self.parse_expr(0, false)?;
+        let val = self.parse_expr(0, false);
 
         let stm_en = self.peek_span().en.clone();
 
-        Ok(BlockLevel::ReAssign {
+        BlockLevel::ReAssign {
             to_mut,
             assign_op,
             info: StmtInfo {
@@ -7664,20 +7860,20 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(self.is_expr_block(&val))?,
+                docs: self.end_stmt_parse(self.is_expr_block(&val)),
             },
             val,
-        })
+        }
     }
 
-    fn parse_nexted_func(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_nexted_func(&mut self) -> BlockLevel {
         let is_extern;
 
         let func_init = self.init_stm(&Token::Function);
 
-        let expect = self.expect_typespec()?;
+        let expect = self.expect_typespec();
 
-        let ident = self.expect_ident()?; // Check if there is an identifier, if there is, that is the name and there isn't, return an error
+        let ident = self.expect_ident(); // Check if there is an identifier, if there is, that is the name and there isn't, return an error
 
         // check for generic types
         let generics;
@@ -7690,7 +7886,7 @@ impl Parser {
                 let mut genr = Vec::new(); //the genr variable contains all the generics of Generic type
                 while self.peek_kind() != Some(Token::Greater) {
                     // in as much as the generit notation is not closed with >
-                    let name = self.expect_ident()?;
+                    let name = self.expect_ident();
                     self.expect(&Token::Colon); // <T:
 
                     let mut traits = Vec::new(); // this contains all the traits of the generic type
@@ -7700,7 +7896,7 @@ impl Parser {
                             self.advance();
                             while self.peek_kind() != Some(Token::RParen) {
                                 // as long is it's not yet closed with )
-                                traits.push(self.expect_ident()?); // add the identifier at current position to the traits
+                                traits.push(self.expect_ident()); // add the identifier at current position to the traits
                                                                    // <T: (Clone
                                 match self.peek_kind() {
                                     Some(Token::Comma) => {
@@ -7717,7 +7913,7 @@ impl Parser {
                         }
                         _ => {
                             traits.push(
-                                self.expect_ident()?, // <T: Clone
+                                self.expect_ident(), // <T: Clone
                             );
                         }
                     }
@@ -7747,7 +7943,7 @@ impl Parser {
             }
         }
 
-        let from_params = self.parse_func_params()?;
+        let from_params = self.parse_func_params();
         let params = from_params.0;
         let variadic = from_params.1;
 
@@ -7761,7 +7957,7 @@ impl Parser {
             stm_en = self.peek_span().en.clone();
 
             let abi_st = self.peek_span().st.clone();
-            let expr = self.parse_expr(0, false)?;
+            let expr = self.parse_expr(0, false);
             let abi_en = self.peek_span().en.clone();
             let abi; // ABI -> Application Binary Interface
 
@@ -7822,13 +8018,13 @@ impl Parser {
 
             is_extern = None;
             self.expect(&Token::Colon);
-            items = self.parse_expr(0, false)?;
+            items = self.parse_expr(0, false);
             stm_en = self.peek_span().en.clone();
         }
 
         // Flags End
 
-        Ok(BlockLevel::FuncDecl {
+        BlockLevel::FuncDecl {
             expect,
             ident,
             generics,
@@ -7841,18 +8037,18 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(self.is_expr_block(&items))?,
+                docs: self.end_stmt_parse(self.is_expr_block(&items)),
             },
             block: items,
-        })
+        }
     }
 
-    fn parse_func_call(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_func_call(&mut self) -> BlockLevel {
         let stm_st = self.peek_span().st.clone();
 
         self.expect(&Token::Tilde);
 
-        let expr = self.parse_expr(0, false)?;
+        let expr = self.parse_expr(0, false);
 
         match expr {
             Expr {
@@ -7867,7 +8063,7 @@ impl Parser {
             } => {
                 let stm_en = self.peek_span().en.clone();
 
-                Ok(BlockLevel::FuncCall {
+                BlockLevel::FuncCall {
                     func: Expr {
                         kind: ExprKind::ArgBuffer {
                             asy,
@@ -7883,9 +8079,9 @@ impl Parser {
                             en: stm_en,
                             file: self.file.clone(),
                         },
-                        docs: self.end_stmt_parse(false)?,
+                        docs: self.end_stmt_parse(false),
                     },
-                })
+                }
             }
             Expr {
                 kind: ExprKind::ObjAssess { obj, fields },
@@ -7904,7 +8100,7 @@ impl Parser {
                                 name: _,
                             },
                         span: _,
-                    } => Ok(BlockLevel::FuncCall {
+                    } => BlockLevel::FuncCall {
                         func: Expr {
                             kind: ExprKind::ObjAssess {
                                 obj: obj.clone(),
@@ -7926,17 +8122,21 @@ impl Parser {
                                 en: stm_en,
                                 file: self.file.clone(),
                             },
-                            docs: self.end_stmt_parse(false)?,
+                            docs: self.end_stmt_parse(false),
                         },
-                    }),
-                    _ => Err(self.errs.push(Error {
-                        message: format!("The statement does not expect a value"),
-                        span: Span {
-                            st: stm_st,
-                            en: stm_en,
-                            file: self.file.clone(),
-                        },
-                    })),
+                    },
+                    _ => {
+                        self.errs.push(Error {
+                            message: format!("The statement does not expect a value"),
+                            span: Span {
+                                st: stm_st,
+                                en: stm_en,
+                                file: self.file.clone(),
+                            },
+                        });
+                        
+                        BlockLevel::Foo
+                    },
                 }
             }
             Expr {
@@ -7945,7 +8145,7 @@ impl Parser {
             } => {
                 let stm_en = self.peek_span().en.clone();
 
-                Ok(BlockLevel::FuncCall {
+                BlockLevel::FuncCall {
                     func: Expr {
                         kind: ExprKind::ElemNamespaceAccess { ident, access },
                         span,
@@ -7956,29 +8156,31 @@ impl Parser {
                             en: stm_en,
                             file: self.file.clone(),
                         },
-                        docs: self.end_stmt_parse(false)?,
+                        docs: self.end_stmt_parse(false),
                     },
-                })
+                }
             }
             _ => {
                 let stm_en = self.peek_span().en.clone();
-                Err(self.errs.push(Error {
+                self.errs.push(Error {
                     message: format!("The statement does not expect a value"),
                     span: Span {
                         st: stm_st,
                         en: stm_en,
                         file: self.file.clone(),
                     },
-                }))
+                });
+
+                BlockLevel::Foo
             }
         }
     }
 
-    fn parse_block(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_block(&mut self) -> BlockLevel {
         let st = self.expect(&Token::LBrace).st.clone();
-        let stms = self.parse_stmts()?;
+        let stms = self.parse_stmts();
 
-        Ok(BlockLevel::Block {
+        BlockLevel::Block {
             stms: stms.0,
             info: StmtInfo {
                 span: Span {
@@ -7986,21 +8188,21 @@ impl Parser {
                     en: stms.1,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(true)?,
+                docs: self.end_stmt_parse(true),
             },
-        })
+        }
     }
 
-    fn parse_var_init(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_var_init(&mut self) -> BlockLevel {
         let stm_st = self.peek_span().st.clone();
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident();
 
         self.expect(&Token::Colon);
 
-        let expr = self.parse_expr(0, false)?;
+        let expr = self.parse_expr(0, false);
         let stm_en = self.peek_span().en.clone();
 
-        return Ok(BlockLevel::VarInit {
+        BlockLevel::VarInit {
             ident,
             info: StmtInfo {
                 span: Span {
@@ -8008,44 +8210,44 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(self.is_expr_block(&expr))?,
+                docs: self.end_stmt_parse(self.is_expr_block(&expr)),
             },
             expr,
-        });
+        }
     }
 
-    fn parse_expr_call_or_var_init(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_expr_call_or_var_init(&mut self) -> BlockLevel {
         let stm_st = self.expect(&Token::Colon).st.clone();
 
-        let expr = self.parse_expr(0, false)?;
+        let expr = self.parse_expr(0, false);
 
         let stm_en = self.peek_span().en.clone();
 
-        Ok(BlockLevel::BindedVal {
+        BlockLevel::BindedVal {
             info: StmtInfo {
                 span: Span {
                     st: stm_st,
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(self.is_expr_block(&expr))?,
+                docs: self.end_stmt_parse(self.is_expr_block(&expr)),
             },
             expr,
-        })
+        }
     }
 
-    fn parse_if(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_if(&mut self) -> BlockLevel {
         let stm_st = self.expect(&Token::If).st.clone();
         let bool_expr;
         let mut else_ifs = vec![];
         let mut else_exe = None;
 
-        bool_expr = self.parse_expr(0, false)?;
+        bool_expr = self.parse_expr(0, false);
         self.expect(&Token::Colon);
 
         // Parse Function-Level
 
-        let exe = self.parse_expr(0, false)?;
+        let exe = self.parse_expr(0, false);
         // self.expect(&Token::LBrace);
         // let from_block = self.parse_stmts()?;
         // let items = from_block.0;
@@ -8056,11 +8258,11 @@ impl Parser {
             if self.peek_kind() == Some(Token::If) {
                 let else_if_stm_st = self.peek_span().st.clone();
                 self.advance();
-                let else_if_expr = self.parse_expr(0, false)?;
+                let else_if_expr = self.parse_expr(0, false);
                 // Parse Function-Level
                 self.expect(&Token::Colon);
 
-                let else_if_exe = self.parse_expr(0, false)?;
+                let else_if_exe = self.parse_expr(0, false);
                 let else_if_stm_en = self.peek_span().en.clone();
 
                 else_ifs.push(ElseIf {
@@ -8077,14 +8279,14 @@ impl Parser {
                 // Parse Function-Level
                 self.expect(&Token::Colon);
 
-                else_exe = Some(self.parse_expr(0, false)?);
+                else_exe = Some(self.parse_expr(0, false));
                 break;
             }
         }
 
         let stm_en = self.peek_span().en.clone();
 
-        Ok(BlockLevel::IfStmt {
+        BlockLevel::IfStmt {
             bool_expr,
             exe: exe,
             else_ifs,
@@ -8095,25 +8297,25 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(false)?, // we need to find out though
+                docs: self.end_stmt_parse(false), // we need to find out though
             },
-        })
+        }
     }
 
-    fn parse_do_while(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_do_while(&mut self) -> BlockLevel {
         let stm_st = self.expect(&Token::Do).st.clone();
 
         self.expect(&Token::LBrace);
-        let exe = self.parse_stmts()?.0;
+        let exe = self.parse_stmts().0;
 
         self.expect(&Token::While);
         self.expect(&Token::LParen);
-        let bool_expr = self.parse_expr(0, false)?;
+        let bool_expr = self.parse_expr(0, false);
         self.expect(&Token::RParen);
 
         let stm_en = self.peek_span().en.clone();
 
-        Ok(BlockLevel::DoWhileStmt {
+        BlockLevel::DoWhileStmt {
             exe,
             expr: bool_expr,
             info: StmtInfo {
@@ -8122,23 +8324,23 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(false)?,
+                docs: self.end_stmt_parse(false),
             },
-        })
+        }
     }
 
-    fn parse_while(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_while(&mut self) -> BlockLevel {
         let stm_st = self.expect(&Token::While).st.clone();
 
-        let bool_expr = self.parse_expr(0, false)?;
+        let bool_expr = self.parse_expr(0, false);
         self.expect(&Token::Colon);
 
         self.expect(&Token::LBrace); // loops most be blocked
-        let exe = self.parse_stmts()?.0;
+        let exe = self.parse_stmts().0;
 
         let stm_en = self.peek_span().en.clone();
 
-        Ok(BlockLevel::WhileStmt {
+        BlockLevel::WhileStmt {
             expr: bool_expr,
             exe,
             info: StmtInfo {
@@ -8147,20 +8349,20 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(true)?,
+                docs: self.end_stmt_parse(true),
             },
-        })
+        }
     }
 
-    fn parse_loop(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_loop(&mut self) -> BlockLevel {
         let stm_st = self.expect(&Token::Loop).st.clone();
 
         self.expect(&Token::LBrace);
-        let exe = self.parse_stmts()?.0;
+        let exe = self.parse_stmts().0;
 
         let stm_en = self.peek_span().en.clone();
 
-        Ok(BlockLevel::LoopStmt {
+        BlockLevel::LoopStmt {
             exe,
             info: StmtInfo {
                 span: Span {
@@ -8168,30 +8370,30 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(true)?,
+                docs: self.end_stmt_parse(true),
             },
-        })
+        }
     }
 
-    fn parse_peeking(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_peeking(&mut self) -> BlockLevel {
         let stm_st = self.expect(&Token::Peeking).st.clone();
 
         // fún 8p i nínú 1..10: {...}
-        let param = self.expect_param()?;
+        let param = self.expect_param();
 
         self.expect(&Token::From);
 
-        let expr = self.parse_expr(0, false)?;
+        let expr = self.parse_expr(0, false);
         self.expect(&Token::Colon);
 
         self.expect(&Token::LBrace);
-        let block = self.parse_stmts()?;
+        let block = self.parse_stmts();
 
         let exe = block.0;
 
         let stm_en = block.1;
 
-        Ok(BlockLevel::PeekingStmt {
+        BlockLevel::PeekingStmt {
             param,
             expr,
             exe,
@@ -8201,19 +8403,19 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(true)?,
+                docs: self.end_stmt_parse(true),
             },
-        })
+        }
     }
 
-    fn parse_for(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_for(&mut self) -> BlockLevel {
         let stm_st = self.expect(&Token::For).st.clone();
 
         // self.expect(&Token::LParen);
         let assign_st = self.peek_span().st.clone();
-        let ty = self.expect_typespec()?;
+        let ty = self.expect_typespec();
 
-        let name = self.expect_ident()?; // Check if there is an identifier, if there is, that is the name and there isn't, return an error
+        let name = self.expect_ident(); // Check if there is an identifier, if there is, that is the name and there isn't, return an error
 
         let nxt = self.peek_kind();
         if nxt == Some(Token::Mut) {
@@ -8221,7 +8423,7 @@ impl Parser {
         }
 
         self.expect(&Token::Colon);
-        let value = Box::new(self.parse_expr(0, false)?);
+        let value = Box::new(self.parse_expr(0, false));
         let assign_en = self.peek_span().en.clone();
         // assign
         let assign = ForAssign {
@@ -8238,7 +8440,7 @@ impl Parser {
         self.expect(&Token::Comma);
 
         let op_option = self.advance();
-        let expr = Box::new(self.parse_expr(0, false)?);
+        let expr = Box::new(self.parse_expr(0, false));
 
         let op;
         match op_option {
@@ -8294,7 +8496,7 @@ impl Parser {
         self.expect(&Token::Comma);
 
         let op_option = self.advance(); // ... + ...
-        let expr = Box::new(self.parse_expr(0, false)?);
+        let expr = Box::new(self.parse_expr(0, false));
 
         let incr_op;
         match op_option {
@@ -8349,12 +8551,12 @@ impl Parser {
         self.expect(&Token::Colon);
 
         self.expect(&Token::LBrace);
-        let block = self.parse_stmts()?;
+        let block = self.parse_stmts();
         let exe = block.0;
 
         let stm_en = block.1;
 
-        Ok(BlockLevel::ForStmt {
+        BlockLevel::ForStmt {
             assign,
             cond,
             incr,
@@ -8365,16 +8567,16 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(true)?,
+                docs: self.end_stmt_parse(true),
             },
-        })
+        }
     }
 
-    fn parse_match(&mut self) -> Result<BlockLevel, ()> {
+    fn parse_match(&mut self) -> BlockLevel {
         let stm_st = self.expect(&Token::Match).st.clone();
         let mut arms = vec![];
 
-        let var = self.expect_ident()?;
+        let var = self.expect_ident();
         self.expect(&Token::LBrace);
 
         // let default_string = String::from("_");
@@ -8431,19 +8633,19 @@ impl Parser {
                 },
                 _ => {
                     self.advance();
-                    expr = self.parse_expr(0, true)?;
+                    expr = self.parse_expr(0, true);
                     self.expect(&Token::Colon);
                 }
             }
 
-            let exe = self.parse_expr(0, false)?;
+            let exe = self.parse_expr(0, false);
 
             arms.push(Case { expr, exe });
         }
         let stm_en = self.peek_span().en.clone();
         self.expect(&Token::RBrace);
 
-        Ok(BlockLevel::MatchStmt {
+        BlockLevel::MatchStmt {
             var,
             arms,
             info: StmtInfo {
@@ -8452,8 +8654,8 @@ impl Parser {
                     en: stm_en,
                     file: self.file.clone(),
                 },
-                docs: self.end_stmt_parse(true)?,
+                docs: self.end_stmt_parse(true),
             },
-        })
+        }
     }
 }
