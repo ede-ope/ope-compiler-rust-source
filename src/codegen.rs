@@ -578,7 +578,7 @@ impl Codegen {
 
     pub fn gen_expr(&mut self, expr: &Expr) -> LLVMValueRef {
         match &expr.kind {
-            ExprKind::Number(n) => panic!("Number expression {} should have been lowered to typed on line {}", n, expr.span.st.line),
+            ExprKind::Number(n) => self.gen_number(n),
             ExprKind::Str(s) => self.gen_string(s),
             ExprKind::Binary { lhs, op, rhs, .. } => self.gen_binary(lhs, op, rhs),
             ExprKind::Ident { ident, .. } => self.gen_ident(ident),
@@ -877,34 +877,34 @@ impl Codegen {
 
     // ── literals ─────────────────────────────────────────────────────────────
 
-    // fn gen_number(&self, n: &str) -> LLVMValueRef {
-    //     unsafe {
-    //         let val: Result<i32, std::num::ParseIntError> = if let Some(hex) = n.strip_prefix("0x")
-    //         {
-    //             i32::from_str_radix(hex, 16)
-    //         } else if let Some(binary) = n.strip_prefix("0b") {
-    //             i32::from_str_radix(binary, 2)
-    //         } else {
-    //             n.parse::<i32>()
-    //         };
+    fn gen_number(&self, n: &str) -> LLVMValueRef {
+        unsafe {
+            let val: Result<i32, std::num::ParseIntError> = if let Some(hex) = n.strip_prefix("0x")
+            {
+                i32::from_str_radix(hex, 16)
+            } else if let Some(binary) = n.strip_prefix("0b") {
+                i32::from_str_radix(binary, 2)
+            } else {
+                n.parse::<i32>()
+            };
 
-    //         if let Ok(i) = val {
-    //             LLVMConstInt(LLVMInt32Type(), i as u64, 1)
-    //         } else if let Err(err) = val {
-    //             panic!("Err: {}", err);
-    //         } else {
-    //             panic!("{} is not a valid i32", n);
-    //         }
+            if let Ok(i) = val {
+                LLVMConstInt(LLVMInt32Type(), i as u64, 1)
+            } else if let Err(err) = val {
+                panic!("Err: {}", err);
+            } else {
+                panic!("{} is not a valid i32", n);
+            }
 
-    //         // if let Ok(i) = n.parse::<i32>() {
-    //         //     LLVMConstInt(LLVMInt32Type(), i as u64, 1)
-    //         // } else if let Ok(f) = n.parse::<f64>() {
-    //         //     LLVMConstReal(LLVMDoubleType(), f)
-    //         // } else {
-    //         //     panic!("invalid number literal: {}", n)
-    //         // }
-    //     }
-    // }
+            // if let Ok(i) = n.parse::<i32>() {
+            //     LLVMConstInt(LLVMInt32Type(), i as u64, 1)
+            // } else if let Ok(f) = n.parse::<f64>() {
+            //     LLVMConstReal(LLVMDoubleType(), f)
+            // } else {
+            //     panic!("invalid number literal: {}", n)
+            // }
+        }
+    }
 
     fn gen_string(&mut self, s: &str) -> LLVMValueRef {
         if let Some(&ptr) = self.strings.get(s) {
