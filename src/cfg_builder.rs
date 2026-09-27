@@ -139,6 +139,9 @@ impl CFGBuilder {
                     todo!("call to conversion trait for {} to {}", expr.kind, ty.hint)
                 }
             }
+            ExprKind::Binary { lhs: _, op: _, rhs: _ } => {
+                panic!("I need to know what type is the lhs and the rhs exprs even if they are ident and that is why cfg need a symbol table")
+            }
             ExprKind::Number(n) => {
                 match &ty.hint {
                     TypeHint::U8(_) | TypeHint::U16(_) |
