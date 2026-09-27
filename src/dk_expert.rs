@@ -544,6 +544,7 @@ impl<'a> KkWriter<'a> {
                                     name: _,
                                     value: _,
                                     is_move: _,
+                                    // group: _
                                 } => {
                                     todo!("writing InstKind::Assign")
                                 }

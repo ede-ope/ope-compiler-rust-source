@@ -11,6 +11,8 @@ use std::fmt::{Display, Formatter};
 use std::iter::{Enumerate, Peekable};
 use std::str::Chars;
 
+use crate::parser::{self, Error};
+
 #[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Debug)]
 pub struct Pos {
     pub column: usize, //The start offset is stored in a byte
@@ -210,6 +212,8 @@ pub struct LexedSelf<'a> {
     pub line_num: usize, // helper field
     pub line_column: usize,
     pub chars: Peekable<Enumerate<Chars<'a>>>,
+
+    pub errs: Vec<parser::Error>
 }
 
 impl<'a> LexedSelf<'a> {
@@ -243,6 +247,7 @@ impl<'a> LexedSelf<'a> {
             line_num: 1,
             line_column: 0,
             chars: input.chars().enumerate().peekable(),
+            errs: vec![]
         }
     }
 
@@ -540,6 +545,17 @@ impl<'a> LexedSelf<'a> {
                 // Numbers
                 c if c.is_ascii_digit() => {
                     let mut num = String::new();
+                    if c == '0' {
+                        num.push(c); // for the first digit
+                        self.next();
+                        if let Some(&(_, 'x')) = self.peek() {
+                            num.push('x'); // for the second digit
+                            self.next();
+                        } else if let Some(&(_, 'b')) = self.peek() {
+                            num.push('b'); // for the second digit
+                            self.next();
+                        }
+                    }
                     while let Some(&(_i2, c2)) = self.peek() {
                         // if c2 == '\n' {
                         //     self.handle_lines(i);
@@ -573,7 +589,16 @@ impl<'a> LexedSelf<'a> {
                                     self.next();
                                     break;  // stop loop since num is gone
                                 }
-                                _ => {self.tokens.push(FullTok { kind: Token::Number(num), span: d_span }); //  Return it as a number then
+                                _ => {
+                                    if c2.is_alphabetic() {
+                                        self.errs.push(
+                                            Error {
+                                                message: format!("Tokenizer error: Unsupported identifier format at line: {}\n", self.line_num),
+                                                span: d_span.clone()
+                                            }
+                                        );
+                                    }
+                                    self.tokens.push(FullTok { kind: Token::Number(num), span: d_span }); //  Return it as a number then
                                     break;
                                 }
                             }
@@ -1502,7 +1527,20 @@ impl<'a> LexedSelf<'a> {
                             }
                         } else if c2 == '\n' {
                             self.handle_lines();
-                            println!("Handle error: Use Multiling instead\n");
+                            let d_span = Span {
+                                st: st.clone(),
+                                en: Pos {
+                                    column: st.column + 1,
+                                    line: self.line_num,
+                                },
+                                file: self.file.clone()
+                            };
+                            self.errs.push(
+                                Error {
+                                    message: format!("Handle error: Use Multiling instead\n"),
+                                    span: d_span
+                                }
+                            );
                         } else {
                             let mut s = String::new();
                             while let Some(&(_i2, c2)) = self.peek() {
@@ -1511,7 +1549,20 @@ impl<'a> LexedSelf<'a> {
                                     break;
                                 } else if c2 == '\n' {
                                     self.handle_lines();
-                                    println!("Handle error: Use Multiling instead\n");
+                                    let d_span = Span {
+                                        st: st.clone(),
+                                        en: Pos {
+                                            column: st.column + s.chars().count(),
+                                            line: self.line_num,
+                                        },
+                                        file: self.file.clone()
+                                    };
+                                    self.errs.push(
+                                        Error {
+                                            message: format!("Handle error: Use Multiling instead\n"),
+                                            span: d_span
+                                        }
+                                    );
                                 }
                                 s.push(c2);
                             }
@@ -1572,7 +1623,20 @@ impl<'a> LexedSelf<'a> {
                         if c2 == '\'' {
                             break;
                         } else if c2 == '\n' {
-                            println!("Handle error: Use Multiling instead of '\n")
+                            let d_span = Span {
+                                st: st.clone(),
+                                en: Pos {
+                                    column: st.column + s.len(),
+                                    line: self.line_num,
+                                },
+                                file: self.file.clone()
+                            };
+                            self.errs.push(
+                                Error {
+                                    message: format!("Handle error: Use Multiling instead of '\n"),
+                                    span: d_span
+                                }
+                            );
                         }
                         s.push(c2);
                     }
@@ -1592,7 +1656,20 @@ impl<'a> LexedSelf<'a> {
                         });
                     } else {
                         //  Print an error message
-                        println!("Handle error: Oníwà ni e ń retí níbí yìí\n");
+                        let d_span = Span {
+                            st: st.clone(),
+                            en: Pos {
+                                column: st.column + s.len(),
+                                line: self.line_num,
+                            },
+                            file: self.file.clone()
+                        };
+                        self.errs.push(
+                            Error {
+                                message: format!("Handle error: Oníwà ni e ń retí níbí yìí\n"),
+                                span: d_span
+                            }
+                        );
                     }
                 }
 

@@ -98,6 +98,13 @@ pub struct BasicBlock {
     pub state_out: OwnershipMap, // ownership state when exiting
     pub loans_in: Vec<LoanId>,   // active loans when entering
     pub loans_out: Vec<LoanId>,  // active loans when exiting
+
+    // which group does each variable belong to at block entry
+    // pub group_in:   HashMap<String, GroupPath>,
+    // // which group does each variable belong to at block exit
+    // pub group_out:  HashMap<String, GroupPath>,
+    // // which group paths are invalidated at each program point
+    // pub invalidated: HashMap<ProgramPoint, Vec<GroupPath>>,
 }
 
 impl BasicBlock {
@@ -114,6 +121,10 @@ impl BasicBlock {
             state_out: HashMap::new(),
             loans_in: vec![],
             loans_out: vec![],
+
+            // group_in: HashMap::new(),
+            // group_out: HashMap::new(),
+            // invalidated: HashMap::new()
         }
     }
 
@@ -125,6 +136,75 @@ impl BasicBlock {
 /// Ownership state of all variables at a program point
 #[allow(dead_code)]
 pub type OwnershipMap = std::collections::HashMap<String, OwnershipState>;
+
+// /// A group — a set of values that can be mutably aliased
+// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// pub struct GroupId(pub usize);
+
+// /// The path to a child group
+// /// e.g. r.rings.items[*] means "elements of rings field"
+// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// pub enum GroupPath {
+//     /// The root group itself
+//     Root(GroupId),
+//     /// A field of the parent group that is a dynamic container
+//     /// e.g. r.rings.items[*]
+//     ChildCollection {
+//         parent: Box<GroupPath>,
+//         field:  String,        // field name e.g. "rings"
+//     },
+//     /// A pointer dereference — the heap object pointed to
+//     /// e.g. r.armor[]
+//     ChildPtr {
+//         parent: Box<GroupPath>,
+//         field:  String,
+//     },
+//     /// A variant payload
+//     /// e.g. r.hand.Shield
+//     ChildVariant {
+//         parent:  Box<GroupPath>,
+//         field:   String,
+//         variant: String,
+//     },
+// }
+
+// impl GroupPath {
+//     /// Is this path a child of another path?
+//     pub fn is_child_of(&self, other: &GroupPath) -> bool {
+//         match self {
+//             GroupPath::Root(_) => false,
+//             GroupPath::ChildCollection { parent, .. } |
+//             GroupPath::ChildPtr        { parent, .. } |
+//             GroupPath::ChildVariant    { parent, .. } => {
+//                 parent.as_ref() == other || parent.is_child_of(other)
+//             }
+//         }
+//     }
+// }
+
+// /// What kind of type is a variable — determines child group rules
+// #[derive(Debug, Clone, PartialEq)]
+// pub enum ContainerKind {
+//     /// Plain struct field — part of parent group (not a child)
+//     InlineField,
+//     /// Dynamic collection (Vec, List etc) — elements are in child group
+//     Collection,
+//     /// Owning pointer (Box, unique_ptr) — pointee is in child group
+//     OwnedPtr,
+//     /// Tagged union/enum — active variant payload is in child group
+//     Variant,
+// }
+
+// /// Describes what a function call does to groups
+// #[derive(Debug, Clone)]
+// pub struct GroupEffect {
+//     /// which argument index provides the group
+//     pub arg_index: usize,
+//     /// the path within that argument's group that gets mutated
+//     pub path:      GroupPath,
+//     /// is it a mutation (invalidates child groups)?
+//     pub mutates:   bool,
+// }
 
 /// An instruction with ownership/borrow information attached
 #[derive(Debug, Clone)]
@@ -143,6 +223,8 @@ pub enum InstKind {
         name: Ident,
         value: Expr,
         is_move: bool, // is value being moved in?
+
+        // group:   Option<GroupPath>, // which group this variable belongs to
     },
     // RawValue {
     //     name: String,
@@ -169,12 +251,17 @@ pub enum InstKind {
         result: Ident, // variable holding the borrow
         lender: Ident, // variable being borrowed
         loan_id: LoanId,
+
+        // group:   GroupPath, // which group the borrow is into
     },
     /// &mut x — create mutable borrow
     BorrowMut {
         result: Ident,
         lender: Ident,
         loan_id: LoanId,
+
+        // group:       GroupPath,   // which group the borrow is into
+        // mutates_group: GroupPath, // which group gets mutated (may differ)
     },
     /// use of a variable — read
     Use { used: Ident, by: Ident },
@@ -187,6 +274,8 @@ pub enum InstKind {
         func: Ident,
         args: Vec<(Expr, ArgOwnership)>,
         result: Option<Ident>,
+
+        // group_effects: Vec<GroupEffect>, // what groups this call mutates
     },
 }
 
@@ -226,6 +315,18 @@ pub enum BorrowError {
         var: Ident,
         at: ProgramPoint,
     },
+
+    // /// Used a reference into a child group after the parent group was mutated
+    // UseOfInvalidatedGroup {
+    //     path: GroupPath,
+    //     at:   ProgramPoint,
+    // },
+    // /// Tried to use aliased references that violate isolation
+    // IsolationViolation {
+    //     var_a: String,
+    //     var_b: String,
+    //     at:    ProgramPoint,
+    // },
 }
 
 /// CFG extended with borrow checking information
@@ -476,6 +577,187 @@ impl CFG {
     //             }
     //         }
     //     }
+    // }
+
+    // // Group analysis
+    // /// Assign group paths to all variables
+    // pub fn compute_groups(&mut self, type_info: &TypeEnvironment) {
+    //     let mut group_counter = 0;
+
+    //     for block in &mut self.blocks {
+    //         for inst in &block.insts {
+    //             match &inst.kind {
+    //                 InstKind::Assign { name, ty, group, .. } => {
+    //                     if group.is_none() {
+    //                         // each local variable gets its own root group
+    //                         let gid = GroupId(group_counter);
+    //                         group_counter += 1;
+    //                         block.group_in.insert(
+    //                             name.ident.clone(),
+    //                             GroupPath::Root(gid),
+    //                         );
+    //                     }
+    //                 }
+    //                 InstKind::BorrowShared { result, lender, group, .. } |
+    //                 InstKind::BorrowMut   { result, lender, group, .. } => {
+    //                     // borrower gets the same group path as lender
+    //                     block.group_in.insert(result.clone(), group.clone());
+    //                 }
+    //                 _ => {}
+    //             }
+    //         }
+    //     }
+    // }
+
+    // /// Multiple mutable refs to same group = OK
+    // /// Refs to child groups after mutation = ERROR
+    // pub fn check_group_borrowing(&self) -> Vec<BorrowError> {
+    //     let mut errors = vec![];
+
+    //     for block_id in self.reachable() {
+    //         let block = self.block(block_id);
+    //         let mut invalidated_paths: Vec<GroupPath> = vec![];
+
+    //         for inst in &block.insts {
+    //             // check uses against invalidated paths
+    //             match &inst.kind {
+    //                 InstKind::Use { used, .. } => {
+    //                     if let Some(path) = self.group_of(used, block_id) {
+    //                         if Self::is_invalidated(&path, &invalidated_paths) {
+    //                             errors.push(BorrowError::UseOfInvalidatedGroup {
+    //                                 path,
+    //                                 at: inst.point,
+    //                             });
+    //                         }
+    //                     }
+    //                 }
+
+    //                 // mutable borrow — invalidates child groups of lender's group
+    //                 // but NOT the lender's group itself (key difference from Rust)
+    //                 InstKind::BorrowMut { lender, group, .. } => {
+    //                     // invalidate all child groups of this group
+    //                     // (not the group itself — multiple mut refs to same group OK)
+    //                     self.invalidate_children(group, &mut invalidated_paths);
+    //                 }
+
+    //                 InstKind::Call { group_effects, .. } => {
+    //                     for effect in group_effects {
+    //                         if effect.mutates {
+    //                             // mutation invalidates child groups
+    //                             self.invalidate_children(
+    //                                 &effect.path,
+    //                                 &mut invalidated_paths,
+    //                             );
+    //                         }
+    //                     }
+    //                 }
+
+    //                 _ => {}
+    //             }
+
+    //             // expire invalidations based on NLL liveness
+    //             invalidated_paths.retain(|path| {
+    //                 // keep if any variable still using this path is live
+    //                 self.any_live_ref_to_path(path, inst.point)
+    //             });
+    //         }
+    //     }
+
+    //     errors
+    // }
+
+    // fn is_invalidated(path: &GroupPath, invalidated: &[GroupPath]) -> bool {
+    //     invalidated.iter().any(|inv| path == inv || path.is_child_of(inv))
+    // }
+
+    // fn invalidate_children(&self, parent: &GroupPath, invalidated: &mut Vec<GroupPath>) {
+    //     // add all known child group paths of parent to invalidated list
+    //     for block in &self.blocks {
+    //         for (_, path) in &block.group_in {
+    //             if path.is_child_of(parent) && !invalidated.contains(path) {
+    //                 invalidated.push(path.clone());
+    //             }
+    //         }
+    //     }
+    // }
+
+    // fn any_live_ref_to_path(&self, path: &GroupPath, point: ProgramPoint) -> bool {
+    //     // check if any variable pointing to this path is still live
+    //     if let Some(live) = self.live_at.get(&point) {
+    //         for var in live {
+    //             if let Some(var_path) = self.group_of(var, point.block) {
+    //                 if &var_path == path || var_path.is_child_of(path) {
+    //                     return true;
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     false
+    // }
+
+    // fn group_of(&self, var: &str, block: BlockId) -> Option<GroupPath> {
+    //     self.blocks[block.0].group_in.get(var).cloned()
+    // }
+
+    // // Check group borrowing rules — replaces _check_borrow_conflicts
+    // // pub fn check_group_borrowing(&self) -> Vec<BorrowError> {
+    // //     let mut errors = vec![];
+
+    // //     for block in &self.blocks {
+    // //         // track which group paths are currently invalidated
+    // //         let mut invalidated: Vec<GroupPath> = vec![];
+
+    // //         for inst in &block.insts {
+    // //             // check if this instruction uses an invalidated group
+    // //             let used_groups = self.groups_used_by_inst(inst);
+    // //             for used in &used_groups {
+    // //                 if invalidated.iter().any(|inv| used == inv || used.is_child_of(inv)) {
+    // //                     errors.push(BorrowError::UseOfInvalidatedGroup {
+    // //                         path: used.clone(),
+    // //                         at:   inst.point,
+    // //                     });
+    // //                 }
+    // //             }
+
+    // //             // check if this instruction mutates a group
+    // //             // if so, invalidate all child groups of the mutated group
+    // //             if let InstKind::Call { group_effects, .. } = &inst.kind {
+    // //                 for effect in group_effects {
+    // //                     if effect.mutates {
+    // //                         // find all variables in child groups of effect.path
+    // //                         // and add them to invalidated
+    // //                         for (var, path) in &block.group_in {
+    // //                             if path.is_child_of(&effect.path) {
+    // //                                 invalidated.push(path.clone());
+    // //                             }
+    // //                         }
+    // //                     }
+    // //                 }
+    // //             }
+    // //         }
+    // //     }
+
+    // //     errors
+    // // }
+
+    // fn groups_used_by_inst(&self, inst: &Inst) -> Vec<GroupPath> {
+    //     // extract which group paths are accessed by this instruction
+    //     match &inst.kind {
+    //         InstKind::Use { used, .. } => {
+    //             // look up the group of `used`
+    //             self.lookup_group(&used.ident, inst.point.block)
+    //                 .into_iter().collect()
+    //         }
+    //         InstKind::BorrowShared { lender, group, .. } |
+    //         InstKind::BorrowMut   { lender, group, .. } => {
+    //             vec![group.clone()]
+    //         }
+    //         _ => vec![],
+    //     }
+    // }
+
+    // fn lookup_group(&self, var: &str, block: BlockId) -> Option<GroupPath> {
+    //     self.blocks[block.0].group_in.get(var).cloned()
     // }
 
     pub fn compute_liveness(&mut self) {

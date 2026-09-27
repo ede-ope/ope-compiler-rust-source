@@ -747,6 +747,13 @@ pub fn compile_file(cli: ComdInfo) {
     // PARSE THE ENTRY FILE/MODULE
     let mut new_lex = LexedSelf::new(&source, name.clone());
     let lex_result = new_lex.lex();
+
+    if !new_lex.errs.is_empty() {
+        for err in new_lex.errs {
+            syntax_errs.push(err);
+        }
+    }
+
     let tokens = lex_result.tokens;
 
     let lines = lex_result.lines;
@@ -806,6 +813,13 @@ pub fn compile_file(cli: ComdInfo) {
 
     let mut core_mod_lex = LexedSelf::new(&core_mod_source, format!("<gbùngbùn>"));
     let core_mod_lex_result = core_mod_lex.lex();
+
+    if !core_mod_lex.errs.is_empty() {
+        for err in core_mod_lex.errs {
+            syntax_errs.push(err);
+        }
+    }
+
     let core_mod_tokens = core_mod_lex_result.tokens;
     // let _mod_line_spans = mod_lex_result.line_spans;
     let core_mod_lines = core_mod_lex_result.lines;
@@ -894,6 +908,13 @@ pub fn compile_file(cli: ComdInfo) {
 
                             let mut mod_lex = LexedSelf::new(&mod_source, mod_ident.clone());
                             let mod_lex_result = mod_lex.lex();
+
+                            if !mod_lex.errs.is_empty() {
+                                for err in mod_lex.errs {
+                                    syntax_errs.push(err);
+                                }
+                            }
+
                             let mod_tokens = mod_lex_result.tokens;
                             // let _mod_line_spans = mod_lex_result.line_spans;
                             let mod_lines = mod_lex_result.lines;

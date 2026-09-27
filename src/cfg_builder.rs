@@ -2,8 +2,9 @@ use crate::cfg_resourses::{
     ArgOwnership, BlockId, BorrowKind, Inst, InstKind, Loan, LoanId, ProgramPoint, Terminator, CFG,
 };
 
-use crate::parser::{BlockLevel, DataState, Expr, ExprKind, Ident, IdentAffix, TypeSpec};
+use crate::parser::{BlockLevel, DataState, Expr, ExprKind, Ident, IdentAffix, TypeHint, TypeSpec};
 use crate::scanner::{Pos, Span};
+use crate::{type_checker};
 
 /// Builds a CFG from a function's AST
 pub struct CFGBuilder {
@@ -129,6 +130,36 @@ impl CFGBuilder {
 
     // -- statement lowering --
 
+    fn lower_expr(&mut self, ty: &TypeSpec, expr: &Expr) -> Expr {
+        match &expr.kind {
+            ExprKind::AsType { expr: _as_expr, ty: _as_ty } => {
+                if type_checker::is_num_type(&ty) {
+                    expr.clone()
+                } else {
+                    todo!("call to conversion trait for {} to {}", expr.kind, ty.hint)
+                }
+            }
+            ExprKind::Number(n) => {
+                match &ty.hint {
+                    TypeHint::U8(_) | TypeHint::U16(_) |
+                    TypeHint::U32(_) | TypeHint::U64(_) |
+                    TypeHint::U128(_) |
+
+                    TypeHint::I8(_) | TypeHint::I16(_) |
+                    TypeHint::I32(_) | TypeHint::I64(_) |
+                    TypeHint::I128(_) => Expr {
+                        kind: ExprKind::AsType { expr: Box::new(expr.clone()), ty: Box::new(ty.clone()) },
+                        span: expr.span.clone()
+                    },
+                    _ => todo!("call to conversion function for {} to {}", n, ty.hint)
+                }
+            }
+            _ => {
+                todo!("This complex expression cannot yet be lowered to cfg: {}", expr.kind);
+            }
+        }
+    }
+
     fn build_stmts(&mut self, state: DataState, ty: TypeSpec, stmts: &[BlockLevel]) {
         for stmt in stmts {
             // stop emitting if block is already terminated
@@ -206,10 +237,13 @@ impl CFGBuilder {
                     }
                     _ => {} // fall through to normal Assign
                 }
+
+                let new_value = self.lower_expr(ty, value);
+
                 self.emit(InstKind::Assign {
                     ty: ty.clone(),
                     name: name.clone(),
-                    value: value.clone(),
+                    value: new_value,
                     is_move: false,
                 });
             }
@@ -234,7 +268,7 @@ impl CFGBuilder {
                     name: ident.clone(),
                     value: expr.clone(),
                     is_move: false,
-                    is_init: true
+                    is_init: true,
                 });
             }
             BlockLevel::ReAssign { to_mut, val, .. } => {
@@ -243,7 +277,7 @@ impl CFGBuilder {
                     to_mut: to_mut.clone(),
                     val: val.clone(),
                     is_move: false,
-                    is_init: false
+                    is_init: false,
                 });
             }
             BlockLevel::RetVal { expr, .. } => {
@@ -479,8 +513,8 @@ impl CFGBuilder {
                 span: Span {
                     st: Pos { column: 0, line: 0 },
                     en: Pos { column: 0, line: 0 },
-                    file: self.modl.clone()
-                }
+                    file: self.modl.clone(),
+                },
             },
         }
     }
