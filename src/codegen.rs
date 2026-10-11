@@ -1,10 +1,7 @@
 use crate::{
-    borrow_checker::{CustTypeInfo, FuncDeclInfo, FuncExpr},
-    cfg_resourses::{BlockId, Inst, InstKind, Terminator, CFG},
-    llvm::*,
-    parser::{EnumVariants, Expr, ExprKind, Ident, InterfaceParam, TypeHint, TypeSpec},
-    scanner::{FullTok, Token, TruthVal},
-    ComdInfo,
+    ComdInfo, borrow_checker::{CustTypeInfo, FuncDeclInfo, FuncExpr, ModCFG, PlatformArmInfo, PlatformNSInfo, Resource, TakeStmtInfo}, cfg_resourses::{BlockId, CFG, Inst, InstKind, Terminator}, llvm::*, parser::{
+        EnumVariants, Expr, ExprKind, Ident, InterfaceParam, ModPath, TypeHint, TypeSpec,
+    }, scanner::{FullTok, Pos, Span, Token, TruthVal},
 };
 use std::{collections::HashMap, io, os::raw::c_int, path::PathBuf, thread, time::Duration};
 use std::{io::Write, process::Output};
@@ -34,26 +31,33 @@ pub enum Elem {
 
 // ── Codegen ──────────────────────────────────────────────────────────────────
 pub struct Codegen {
+    // file: String,
     pub module: LLVMModuleRef,
     pub builder: LLVMBuilderRef,
     pub symbol_table: Vec<HashMap<String, Elem>>, // scope stack
     pub strings: HashMap<String, LLVMValueRef>,   // string dedup
+    target_os: String,
+    target_arch: String,
 
     // CFG block id → LLVM basic block — built while walking the CFG
     llvm_blocks: HashMap<BlockId, LLVMBasicBlockRef>,
 }
 
 impl Codegen {
-    pub fn new(module_name: &str) -> Self {
+    pub fn new(module_name: String, target_os: String, target_arch: String) -> Self {
         unsafe {
             let module =
                 LLVMModuleCreateWithName(format!("{}\0", module_name).as_ptr() as *const _);
             let builder = LLVMCreateBuilder();
             Self {
+                // file: module_name,
                 module,
                 builder,
                 symbol_table: vec![HashMap::new()],
                 strings: HashMap::new(),
+                target_os,
+                target_arch,
+
                 llvm_blocks: HashMap::new(),
             }
         }
@@ -195,9 +199,31 @@ impl Codegen {
             let fn_type = LLVMFunctionType(ret_type, std::ptr::null_mut(), 0, 0);
             let func = LLVMAddFunction(self.module, c"main".as_ptr(), fn_type);
 
+            let runtime_init = format!("__kui_runtime_init_inner");
+            let runtime = self.gen_extern_function(
+                &runtime_init,
+                &TypeSpec {
+                    hint: TypeHint::Void,
+                    span: Span {
+                        st: Pos {
+                            column: 0,
+                            line: 0
+                        },
+                        en: Pos {
+                            column: 0,
+                            line: 0
+                        },
+                        file: format!("")
+                    }
+                },
+                &vec![],
+                false
+            );
+            self.declare_global(runtime_init, Elem::Function(runtime.0, runtime.1));
+            
             match &info.block {
                 FuncExpr::Cfg(cfg) => {
-                    self.gen_cfg_body(func, cfg, &info.par, &info.expect);
+                    self.gen_cfg_body(func, cfg, &info.par, &info.expect, true);
                 }
                 _ => (),
             }
@@ -207,46 +233,6 @@ impl Codegen {
     }
 
     /// Core: generate a non-extern function from its FuncDeclInfo.
-    // fn gen_function(&mut self, name: &str, info: &FuncDeclInfo) -> LLVMValueRef {
-    //     unsafe {
-    //         let mut param_types: Vec<LLVMTypeRef> =
-    //             info.par.iter().map(|p| self.gen_type(&p.ty)).collect();
-    //         let ret_type = self.gen_type(&info.expect);
-    //         let fn_type = LLVMFunctionType(
-    //             ret_type,
-    //             param_types.as_mut_ptr(),
-    //             param_types.len() as u32,
-    //             0,
-    //         );
-
-    //         let cname = self.cstring(name);
-
-    //         // ← check if already declared in this module
-    //         let func = {
-    //             let existing = LLVMGetNamedFunction(self.module, cname.as_ptr());
-    //             if !existing.is_null() {
-    //                 // reuse the existing declaration — just add a body to it
-    //                 existing
-    //             } else {
-    //                 // create new function
-    //                 LLVMAddFunction(self.module, cname.as_ptr(), fn_type)
-    //             }
-    //         };
-
-    //         // set external linkage for public functions
-    //         if info.is_public {
-    //             LLVMSetLinkage(func, LLVMExternalLinkage);
-    //         }
-
-    //         // register in symbol table
-    //         self.declare_global(name.to_string(), Elem::Function(func, fn_type));
-
-    //         // create entry block and generate body
-    //         self.gen_cfg_body(func, &info.block, &info.par, &info.expect, None);
-
-    //         func
-    //     }
-    // }
     fn gen_function(&mut self, name: &str, info: &FuncDeclInfo) -> LLVMValueRef {
         self.enter_function();
         unsafe {
@@ -286,7 +272,7 @@ impl Codegen {
 
             match &info.block {
                 FuncExpr::Cfg(cfg) => {
-                    self.gen_cfg_body(func, cfg, &info.par, &info.expect);
+                    self.gen_cfg_body(func, cfg, &info.par, &info.expect, false);
                 }
                 _ => (),
             }
@@ -308,9 +294,10 @@ impl Codegen {
         cfg: &CFG,
         params: &[InterfaceParam],
         expect: &TypeSpec,
+        is_entry: bool,
     ) {
         unsafe {
-            // ── Pass 1: pre-create LLVM basic blocks ──────────────────────
+            // ── Pre-create LLVM basic blocks ──────────────────────
             for block in &cfg.blocks {
                 let label = self.cstring(&block.label);
                 let llvm_bb = LLVMAppendBasicBlock(func, label.as_ptr());
@@ -330,7 +317,7 @@ impl Codegen {
                 self.declare(param.ident.ident.clone(), Elem::Var(alloca));
             }
 
-            // ── Pass 2: emit each block ───────────────────────────────────
+            // ── Emit each block ───────────────────────────────────
             for block in &cfg.blocks {
                 let llvm_bb = self.llvm_blocks[&block.id];
 
@@ -339,6 +326,31 @@ impl Codegen {
                 if block.id != cfg.entry {
                     LLVMPositionBuilderAtEnd(self.builder, llvm_bb);
                     self.push_scope(); // new scope per CFG block
+                }
+
+                if is_entry {
+                    let (func, fn_type) = self
+                        .lookup_function(&format!("__kui_runtime_init_inner"))
+                        .expect(&format!("undefined function: {}", format!("__kui_runtime_init_inner")));
+                            
+                    let mut llvm_args: Vec<LLVMValueRef> = vec![];
+                            
+                    let ret_type = LLVMGetReturnType(fn_type);
+                    let type_kind = LLVMGetTypeKind(ret_type);
+                    let call_name = if type_kind == LLVMVoidTypeKind {
+                        c"".as_ptr()
+                    } else {
+                        c"calltmp".as_ptr()
+                    };
+                
+                    LLVMBuildCall2(
+                        self.builder,
+                        fn_type,
+                        func,
+                        llvm_args.as_mut_ptr(),
+                        llvm_args.len() as u32,
+                        call_name,
+                    );
                 }
 
                 // emit instructions
@@ -1100,7 +1112,13 @@ impl Codegen {
             // it will be handled by gen_function directly
             if info.is_extern.is_some() && matches!(info.block, FuncExpr::None) {
                 // truly extern — no body — declare as external
-                self.gen_extern_function(name, &info.expect, &info.par, false);
+                let vardc = info.is_extern.clone().unwrap().1;
+                let is_variadic = if vardc.is_some() {
+                    true
+                } else {
+                    false
+                };
+                self.gen_extern_function(name, &info.expect, &info.par, is_variadic);
             } else if info.is_extern.is_none() {
                 // regular function — just hoist the signature
                 // gen_function will check LLVMGetNamedFunction before creating
@@ -1122,6 +1140,227 @@ impl Codegen {
                         LLVMSetLinkage(func, LLVMInternalLinkage);
                     }
                     self.declare_global(name.clone(), Elem::Function(func, fn_type));
+                }
+            }
+        }
+    }
+
+    pub fn hoist_take(&mut self, takes: &HashMap<String, TakeStmtInfo>, cfg: &HashMap<String, Resource>) {
+        for import in takes {
+            match import.1 {
+                TakeStmtInfo {
+                    take,
+                    from,
+                    lib,
+                    stm_span: _,
+                } => {
+                    if lib.is_none() {
+                        match from {
+                            ModPath::Ident(ident) => {
+                                let src_mod = cfg.get(&ident.ident);
+                                
+                                if src_mod.is_some() {
+                                    let src_mod = src_mod.unwrap();
+                                    match src_mod {
+                                        Resource::File(file_src_mod) | 
+                                        Resource::Package { entry: file_src_mod, src: _ }
+                                        // if it's package then, we are importing from it's entry
+                                         => {
+                                            match &take.0.kind {
+                                                Token::Identifier(str) => {
+                                                    if let Some(src_def) =
+                                                        file_src_mod.custom_tys.get(str)
+                                                    {
+                                                        // // foreign type — opaque declaration, same name
+                                                        // let src_def = get_cust_from_oth(
+                                                        //     take.clone(),
+                                                        //     from.clone(),
+                                                        //     lib.clone(),
+                                                        //     &cfg,
+                                                        // );
+                                                        // if src_def.is_some() {
+                                                        //     let src_def = src_def.unwrap();
+                                                            match src_def {
+                                                                CustTypeInfo::StructDeclInfo { .. } => {
+                                                                    self
+                                                                        .declare_foreign_struct_name(str);
+                                                                }
+                                                                CustTypeInfo::EnumDeclInfo { .. } => {
+                                                                    panic!("Enum not yet addressed")
+                                                                }
+                                                            }
+                                                        // }
+                                                    } else if let Some(src_func) =
+                                                        file_src_mod.funcs.get(str)
+                                                    {
+                                                        // then it's a function,
+                                                        // let src_func = get_func_from_oth(
+                                                        //     take.clone(),
+                                                        //     from.clone(),
+                                                        //     lib.clone(),
+                                                        //     &cfg,
+                                                        // );
+                                                        // if src_func.is_some() {
+                                                        //     let src_func = src_func.unwrap();
+                                                            match &src_func {
+                                                                FuncDeclInfo {
+                                                                    expect,
+                                                                    par,
+                                                                    ..
+                                                                } => {
+                                                                    self
+                                                                        .gen_extern_function(
+                                                                            str, expect, par,
+                                                                            false,
+                                                                        );
+                                                                }
+                                                            }
+                                                        // }
+                                                    }
+                                                }
+                                                _ => (),
+                                            }
+                                        }
+                                        Resource::Folder(_) => todo!(""),
+                                    }
+                                }
+                            }
+                            _ => (), // if it's not a lib then the module most an ident
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn hoist_platforms(&mut self, platforms: &Vec<PlatformNSInfo>, cfg: &HashMap<String, Resource>) {
+        for platform in platforms {
+            // check the platform's target against the current target
+            if platform.arms.len() > 0 {
+                match &platform.arms[0].target.kind {
+                    ExprKind::ElemNamespaceAccess {
+                        ident: Some(ident), ..
+                    } => {
+                        if ident.ident == String::from("KM") || ident.ident == String::from("IrúẸ̀rọ") {
+                            // WE CAN DO BOTH OS AND ARCH TOGETHER BECAUSE CHECKS ARE ALREALDY DONE
+                            // AND CODEGEN DOES NOT NEED TO REDO THEM
+                            // this platform is for KM(OS) targets
+                            // check the target's OS
+                            let os = &self.target_os;
+                            // this platform is for IrúẸ̀rọ(Arch) targets
+                            // check the target's Arch
+                            let arch = &self.target_arch;
+
+                            let mut block = None;
+                            let mut default_block = None;
+
+                            for arm in platform.arms.iter() {
+                                match arm {
+                                    PlatformArmInfo { target, .. } => match &target.kind {
+                                        ExprKind::ElemNamespaceAccess { access, .. } => {
+                                            match &access.kind {
+                                                ExprKind::Ident { ident, .. } => {
+                                                    if ident.ident == *os || ident.ident == *arch {
+                                                        block = Some(arm.clone());
+                                                    }
+                                                }
+                                                _ => panic!("Unexpected OS variant"),
+                                            }
+                                        }
+                                        ExprKind::Default => {
+                                            default_block = Some(arm.clone());
+                                        }
+                                        _ => panic!("Unexpected Platform Expression"),
+                                    },
+                                }
+                            }
+
+                            if block.is_some() {
+                                let block = block.unwrap();
+
+                                match &block.block {
+                                    ModCFG {
+                                        globals: _,
+                                        platform_n_s,
+                                        takes,
+                                        traits: _,
+                                        workers: _,
+                                        statics: _,
+                                        custom_tys,
+                                        methods: _,
+                                        static_meths: _,
+                                        bridges: _,
+                                        main_fn: _,
+                                        funcs
+                                    } => {
+                                        self.hoist_type_names(custom_tys);
+
+                                        // fill in type BODIES (now all names are known)
+                                        self.hoist_type_bodies(custom_tys);
+
+                                        self.hoist_take(takes, cfg);
+
+                                        //
+                                        self.hoist_functions(funcs);
+
+                                        self.hoist_platforms(platform_n_s, cfg);
+
+                                        for f in funcs {
+                                            self.gen_func(f.0, f.1);
+                                        }
+                                    }
+                                }
+                            } else {
+                                if default_block.is_some() {
+                                    let block = default_block.unwrap();
+
+                                    match &block.block {
+                                        ModCFG {
+                                            globals: _,
+                                            platform_n_s,
+                                            takes,
+                                            traits: _,
+                                            workers: _,
+                                            statics: _,
+                                            custom_tys,
+                                            methods: _,
+                                            static_meths: _,
+                                            bridges: _,
+                                            main_fn: _,
+                                            funcs
+                                        } => {
+                                            self.hoist_type_names(custom_tys);
+
+                                            // fill in type BODIES (now all names are known)
+                                            self.hoist_type_bodies(custom_tys);
+
+                                            self.hoist_take(takes, cfg);
+
+                                            //
+                                            self.hoist_functions(funcs);
+
+                                            self.hoist_platforms(platform_n_s, cfg);
+
+                                            for f in funcs {
+                                                self.gen_func(f.0, f.1);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    panic!("No matching platform arm found for OS: {}", os);
+                                }
+                            }
+                        } else {
+                            panic!(
+                                "Unexpected platform target kind: {}",
+                                platform.arms[0].target.kind
+                            );
+                        }
+                    }
+                    _ => panic!(
+                        "Unexpected platform target kind: {}",
+                        platform.arms[0].target.kind
+                    ),
                 }
             }
         }
@@ -1232,16 +1471,14 @@ impl Codegen {
         let lib_dir = if lib_dir.exists() {
             lib_dir
         } else {
+            eprintln!("❌ System lib directory not found: {}", lib_dir.display());
             std::path::PathBuf::from(
                 r"C:\Users\HP\.rustup\toolchains\nightly-x86_64-pc-windows-gnu\lib\rustlib\x86_64-pc-windows-gnu\lib\self-contained",
             )
         };
 
-        // let (crt_obj, subsystem, entry) = if is_gui {
-        //     (lib_dir.join("crtbegin.o"), "windows", "WinMainCRTStartup")
-        // } else {
-        //     (lib_dir.join("crt2.o"), "console", "mainCRTStartup")
-        // };
+        let crt_obj = lib_dir.join("crt2.o");
+        // let crt_obj = std::path::PathBuf::from(r"C:\msys64\mingw64\lib\crt2.o");
 
         print!("\rLinking.. ");
         io::stdout().flush().unwrap();
@@ -1260,6 +1497,7 @@ impl Codegen {
             // GUI CRT
             args.extend_from_slice(&[
                 // "crt2.o",
+                crt_obj.to_str().unwrap_or_else(|| "crt2.o"),
                 // use WinMain entry
                 "-e",
                 "WinMainCRTStartup",
@@ -1269,7 +1507,7 @@ impl Codegen {
         } else {
             // Console CRT
             args.extend_from_slice(&[
-                // "crt2.o",
+                crt_obj.to_str().unwrap_or_else(|| "crt2.o"),
                 // Use main entry
                 "-e",
                 "mainCRTStartup",

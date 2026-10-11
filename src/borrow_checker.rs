@@ -5,9 +5,7 @@ use crate::cfg_resourses::{BorrowError, Terminator, CFG};
 use crate::compiler::{Mod, NameSpace, SemanticError};
 
 use crate::parser::{
-    AssFunc, BlockLevel, BridgeDecl, CustTyAss, DataState, EnumVariants, Expr, ExprKind, Generic,
-    Ident, InterfaceParam, Method, MethodSelf, ModPath, PlatformArm, StructParam, TopLevel,
-    Trinary, TypeHint, TypeSpec,
+    AssFunc, BlockLevel, BridgeDecl, CustTyAss, CustomBlock, CustomLevel, DataState, EnumVariants, Expr, ExprKind, Generic, Ident, InterfaceParam, Method, MethodSelf, ModPath, PlatformArm, StructParam, TopLevel, Trinary, TypeHint, TypeSpec,
 };
 use crate::scanner::{FullTok, Span, Token};
 
@@ -64,9 +62,17 @@ pub struct TraitDefInfo {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
+pub struct PlatformArmInfo {
+    pub target: Expr,
+    pub block: ModCFG,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PlatformNSInfo {
-    arms: Vec<PlatformArm>,
-    stm_span: Span,
+    pub arms: Vec<PlatformArmInfo>,
+    pub stm_span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +190,7 @@ pub enum CustTypeInfo {
 #[allow(dead_code)]
 pub struct ModCFG {
     pub globals: HashMap<String, GlobalDeclInfo>,
-    pub platform_n_s: HashMap<String, PlatformNSInfo>,
+    pub platform_n_s: Vec<PlatformNSInfo>,
     pub takes: HashMap<String, TakeStmtInfo>,
     pub traits: HashMap<String, TraitDefInfo>,
     pub workers: HashMap<String, WorkerDefInfo>,
@@ -201,7 +207,7 @@ impl ModCFG {
     pub fn new() -> Self {
         Self {
             globals: HashMap::new(),
-            platform_n_s: HashMap::new(),
+            platform_n_s: Vec::new(),
             takes: HashMap::new(),
             traits: HashMap::new(),
             workers: HashMap::new(),
@@ -281,6 +287,1292 @@ fn build_block(
     cfg_builder.cfg
 }
 
+fn for_each_take(takes: &Vec<TopLevel>, mod_cfg: &mut ModCFG) {
+    for take in takes {
+        match take.clone() {
+            TopLevel::TakeStmt {
+                take,
+                from,
+                lib,
+                info,
+            } => match take.0.kind.clone() {
+                Token::Identifier(ident) => {
+                    mod_cfg.takes.insert(
+                        ident,
+                        TakeStmtInfo {
+                            take,
+                            from,
+                            lib,
+                            stm_span: info.span,
+                        },
+                    );
+                }
+                _ => (),
+            },
+            _ => (),
+        }
+    }
+}
+
+fn for_each_func(
+    mod_name: &String,
+    fns: &Vec<TopLevel>,
+    mod_cfg: &mut ModCFG,
+    analyser: &mut Analyser,
+) {
+    for func in fns {
+        match func.clone() {
+            TopLevel::FuncDecl {
+                is_async,
+                expect,
+                ret_state,
+                ident,
+                generics,
+                is_visible,
+                is_public,
+                is_extern,
+                par,
+                worker_usage,
+                block,
+                info,
+            } => {
+                if is_extern.is_none() {
+                    let mut cfg = build_block(
+                        ident.ident.clone(),
+                        ret_state.clone(),
+                        expect.clone(),
+                        block,
+                        mod_name.clone(),
+                    );
+
+                    cfg.compute_liveness();
+
+                    // refine loan expiry points now that liveness is known
+                    cfg.finalize_loan_lifetimes(); //
+
+                    // run checks in dependency order
+                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                    // collect all errors
+                    let all_errors: Vec<BorrowError> = move_errors
+                        .into_iter()
+                        .chain(borrow_errors)
+                        .chain(lifetime_errs)
+                        .collect();
+
+                    add_errors(all_errors, analyser);
+
+                    mod_cfg.funcs.insert(
+                        ident.ident.clone(),
+                        FuncDeclInfo {
+                            ident_span: ident.span,
+                            is_async,
+                            expect,
+                            ret_state,
+                            generics,
+                            par,
+                            is_extern: None,
+                            is_public,
+                            is_visible,
+                            worker_usage,
+                            block: FuncExpr::Cfg(cfg),
+                            stm_span: info.span,
+                        },
+                    );
+                } else {
+                    mod_cfg.funcs.insert(
+                        ident.ident.clone(),
+                        FuncDeclInfo {
+                            ident_span: ident.span,
+                            is_async,
+                            expect,
+                            ret_state,
+                            generics,
+                            par,
+                            is_extern,
+                            is_public,
+                            is_visible,
+                            worker_usage,
+                            block: FuncExpr::None,
+                            stm_span: info.span,
+                        },
+                    );
+                }
+            }
+            _ => (),
+        }
+    }
+}
+
+fn for_each_cust_ty(mod_name: &String, custom_tys: &Vec<TopLevel>, mod_cfg: &mut ModCFG, analyser: &mut Analyser) {
+    for each in custom_tys {
+        match each.clone() {
+            TopLevel::EnumDecl {
+                ident,
+                generic_types,
+                vals,
+                traits,
+                public: is_enum_pub,
+                associateds,
+                bridges,
+                info,
+            } => {
+                let mut methods = HashMap::new();
+                let mut ass_functions = HashMap::new();
+                let mut ass_func_strs = vec![];
+                let mut meth_strs = vec![];
+
+                for ass in associateds {
+                    match ass {
+                        CustTyAss::AssFunction(func) => match func.clone() {
+                            AssFunc {
+                                worker_usage,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_extern,
+                                par,
+                                block,
+                                info,
+                            } => {
+                                if block.is_some() {
+                                    let block = block.unwrap();
+                                    let mut cfg = build_block(
+                                        ident.ident.clone(),
+                                        ret_state.clone(),
+                                        expect.clone(),
+                                        block,
+                                        mod_name.clone(),
+                                    );
+
+                                    cfg.compute_liveness();
+
+                                    // refine loan expiry points now that liveness is known
+                                    cfg.finalize_loan_lifetimes(); //
+
+                                    // run checks in dependency order
+                                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                                    // collect all errors
+                                    let all_errors: Vec<BorrowError> = move_errors
+                                        .into_iter()
+                                        .chain(borrow_errors)
+                                        .chain(lifetime_errs)
+                                        .collect();
+
+                                    add_errors(all_errors, analyser);
+
+                                    ass_functions.insert(
+                                        ident.ident.clone(),
+                                        StaticFunc {
+                                            ident_span: ident.span.clone(),
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: Some(cfg),
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                } else {
+                                    ass_functions.insert(
+                                        ident.ident.clone(),
+                                        StaticFunc {
+                                            ident_span: ident.span.clone(),
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+
+                                ass_func_strs.push(ident);
+                            }
+                        },
+                        CustTyAss::Method(meth) => match meth.clone() {
+                            Method {
+                                worker_usage,
+                                meth_self,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_extern,
+                                par,
+                                block,
+                                info,
+                            } => {
+                                if block.is_some() {
+                                    let block = block.unwrap();
+                                    let mut cfg = build_block(
+                                        ident.ident.clone(),
+                                        ret_state.clone(),
+                                        expect.clone(),
+                                        block,
+                                        mod_name.clone(),
+                                    );
+
+                                    cfg.compute_liveness();
+
+                                    // refine loan expiry points now that liveness is known
+                                    cfg.finalize_loan_lifetimes(); //
+
+                                    // run checks in dependency order
+                                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                                    // collect all errors
+                                    let all_errors: Vec<BorrowError> = move_errors
+                                        .into_iter()
+                                        .chain(borrow_errors)
+                                        .chain(lifetime_errs)
+                                        .collect();
+
+                                    add_errors(all_errors, analyser);
+
+                                    methods.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span.clone(),
+                                            meth_self,
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: Some(cfg),
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                } else {
+                                    methods.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span.clone(),
+                                            meth_self,
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+
+                                meth_strs.push(ident);
+                            }
+                        },
+                    }
+                }
+
+                let mut bgs = vec![];
+                for each in &bridges {
+                    match each.clone() {
+                        BridgeDecl {
+                            ass_state,
+                            ass_type,
+                            ass_ident,
+                            new_ty,
+                            public,
+                            block,
+                            info,
+                        } => {
+                            let mut cfg = build_block(
+                                ident.ident.clone(),
+                                DataState::Owner,
+                                TypeSpec {
+                                    hint: TypeHint::Custom {
+                                        import: None,
+                                        ident: new_ty.clone(),
+                                        generics: vec![],
+                                    },
+                                    span: new_ty.span.clone(),
+                                },
+                                block.clone(),
+                                mod_name.clone(),
+                            );
+
+                            cfg.compute_liveness();
+
+                            // refine loan expiry points now that liveness is known
+                            cfg.finalize_loan_lifetimes(); //
+
+                            // run checks in dependency order
+                            let move_errors = cfg.check_use_after_move(); // needs: nothing
+                            let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                            let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                            // collect all errors
+                            let all_errors: Vec<BorrowError> = move_errors
+                                .into_iter()
+                                .chain(borrow_errors)
+                                .chain(lifetime_errs)
+                                .collect();
+
+                            add_errors(all_errors, analyser);
+
+                            bgs.push(BridgeCfg {
+                                ass_ident,
+                                ass_state,
+                                ass_type,
+                                new_ty,
+                                is_public: public,
+                                block: cfg,
+                                stm_span: info.span,
+                            });
+                        }
+                    }
+                }
+
+                mod_cfg.custom_tys.insert(
+                    ident.ident.clone(),
+                    CustTypeInfo::EnumDeclInfo {
+                        ident_span: ident.span,
+                        is_public: is_enum_pub,
+                        generic_types,
+                        vals,
+                        traits,
+                        ass_func_strs,
+                        meth_strs,
+                        stm_span: info.span,
+                    },
+                );
+                mod_cfg.methods.insert(ident.ident.clone(), methods);
+                mod_cfg
+                    .static_meths
+                    .insert(ident.ident.clone(), ass_functions);
+                mod_cfg.bridges.insert(ident.ident.clone(), bgs);
+            }
+            TopLevel::StructDecl {
+                ident,
+                generic_types,
+                vals,
+                traits,
+                public: is_struct_pub,
+                associateds,
+                bridges,
+                info,
+            } => {
+                let mut methods = HashMap::new();
+                let mut ass_functions = HashMap::new();
+                let mut ass_func_strs = vec![];
+                let mut meth_strs = vec![];
+                let mut brg_strs = vec![];
+
+                for ass in associateds {
+                    match ass {
+                        CustTyAss::AssFunction(func) => match func.clone() {
+                            AssFunc {
+                                worker_usage,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_extern,
+                                par,
+                                block,
+                                info,
+                            } => {
+                                if block.is_some() {
+                                    let block = block.unwrap();
+                                    let mut cfg = build_block(
+                                        ident.ident.clone(),
+                                        ret_state.clone(),
+                                        expect.clone(),
+                                        block,
+                                        mod_name.clone(),
+                                    );
+
+                                    cfg.compute_liveness();
+
+                                    // refine loan expiry points now that liveness is known
+                                    cfg.finalize_loan_lifetimes(); //
+
+                                    // run checks in dependency order
+                                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                                    // collect all errors
+                                    let all_errors: Vec<BorrowError> = move_errors
+                                        .into_iter()
+                                        .chain(borrow_errors)
+                                        .chain(lifetime_errs)
+                                        .collect();
+
+                                    add_errors(all_errors, analyser);
+
+                                    ass_functions.insert(
+                                        ident.ident.clone(),
+                                        StaticFunc {
+                                            ident_span: ident.span.clone(),
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: Some(cfg),
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                } else {
+                                    ass_functions.insert(
+                                        ident.ident.clone(),
+                                        StaticFunc {
+                                            ident_span: ident.span.clone(),
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+
+                                ass_func_strs.push(ident);
+                            }
+                        },
+                        CustTyAss::Method(meth) => match meth.clone() {
+                            Method {
+                                worker_usage,
+                                meth_self,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_extern,
+                                par,
+                                block,
+                                info,
+                            } => {
+                                if block.is_some() {
+                                    let block = block.unwrap();
+                                    let mut cfg = build_block(
+                                        ident.ident.clone(),
+                                        ret_state.clone(),
+                                        expect.clone(),
+                                        block,
+                                        mod_name.clone(),
+                                    );
+
+                                    cfg.compute_liveness();
+
+                                    // refine loan expiry points now that liveness is known
+                                    cfg.finalize_loan_lifetimes(); //
+
+                                    // run checks in dependency order
+                                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                                    // collect all errors
+                                    let all_errors: Vec<BorrowError> = move_errors
+                                        .into_iter()
+                                        .chain(borrow_errors)
+                                        .chain(lifetime_errs)
+                                        .collect();
+
+                                    add_errors(all_errors, analyser);
+
+                                    methods.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span.clone(),
+                                            meth_self,
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: Some(cfg),
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                } else {
+                                    methods.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span.clone(),
+                                            meth_self,
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+
+                                meth_strs.push(ident);
+                            }
+                        },
+                    }
+                }
+
+                let mut bgs = vec![];
+                for each in &bridges {
+                    match each.clone() {
+                        BridgeDecl {
+                            ass_state,
+                            ass_type,
+                            ass_ident,
+                            new_ty,
+                            public,
+                            block,
+                            info,
+                        } => {
+                            let mut cfg = build_block(
+                                ident.ident.clone(),
+                                DataState::Owner,
+                                TypeSpec {
+                                    hint: TypeHint::Custom {
+                                        import: None,
+                                        ident: new_ty.clone(),
+                                        generics: vec![],
+                                    },
+                                    span: new_ty.span.clone(),
+                                },
+                                block.clone(),
+                                mod_name.clone(),
+                            );
+
+                            cfg.compute_liveness();
+
+                            // refine loan expiry points now that liveness is known
+                            cfg.finalize_loan_lifetimes(); //
+
+                            // run checks in dependency order
+                            let move_errors = cfg.check_use_after_move(); // needs: nothing
+                            let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                            let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                            // collect all errors
+                            let all_errors: Vec<BorrowError> = move_errors
+                                .into_iter()
+                                .chain(borrow_errors)
+                                .chain(lifetime_errs)
+                                .collect();
+
+                            add_errors(all_errors, analyser);
+
+                            bgs.push(BridgeCfg {
+                                ass_ident,
+                                ass_state,
+                                ass_type,
+                                new_ty,
+                                is_public: public,
+                                block: cfg,
+                                stm_span: info.span,
+                            });
+                            brg_strs.push(ident.clone());
+                        }
+                    }
+                }
+
+                mod_cfg.custom_tys.insert(
+                    ident.ident.clone(),
+                    CustTypeInfo::StructDeclInfo {
+                        ident_span: ident.span,
+                        is_public: is_struct_pub,
+                        generic_types,
+                        vals,
+                        traits,
+                        ass_func_strs,
+                        meth_strs,
+                        stm_span: info.span,
+                    },
+                );
+                mod_cfg.methods.insert(ident.ident.clone(), methods);
+                mod_cfg
+                    .static_meths
+                    .insert(ident.ident.clone(), ass_functions);
+                mod_cfg.bridges.insert(ident.ident.clone(), bgs);
+            }
+            _ => (),
+        }
+    }
+}
+
+fn for_each_cust_block_take(takes: &Vec<CustomLevel>, mod_cfg: &mut ModCFG) {
+    for take in takes {
+        match take.clone() {
+            CustomLevel::TakeStmt {
+                take,
+                from,
+                lib,
+                info,
+            } => match take.0.kind.clone() {
+                Token::Identifier(ident) => {
+                    mod_cfg.takes.insert(
+                        ident,
+                        TakeStmtInfo {
+                            take,
+                            from,
+                            lib,
+                            stm_span: info.span,
+                        },
+                    );
+                }
+                _ => (),
+            },
+            _ => (),
+        }
+    }
+}
+
+fn for_each_cust_block_func(
+    mod_name: &String,
+    fns: &Vec<CustomLevel>,
+    mod_cfg: &mut ModCFG,
+    analyser: &mut Analyser,
+) {
+    for func in fns {
+        match func.clone() {
+            CustomLevel::FuncDecl {
+                is_async,
+                expect,
+                ret_state,
+                ident,
+                generics,
+                is_visible,
+                is_public,
+                is_extern,
+                par,
+                worker_usage,
+                block,
+                info,
+            } => {
+                if is_extern.is_none() {
+                    let mut cfg = build_block(
+                        ident.ident.clone(),
+                        ret_state.clone(),
+                        expect.clone(),
+                        block,
+                        mod_name.clone(),
+                    );
+
+                    cfg.compute_liveness();
+
+                    // refine loan expiry points now that liveness is known
+                    cfg.finalize_loan_lifetimes(); //
+
+                    // run checks in dependency order
+                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                    // collect all errors
+                    let all_errors: Vec<BorrowError> = move_errors
+                        .into_iter()
+                        .chain(borrow_errors)
+                        .chain(lifetime_errs)
+                        .collect();
+
+                    add_errors(all_errors, analyser);
+
+                    mod_cfg.funcs.insert(
+                        ident.ident.clone(),
+                        FuncDeclInfo {
+                            ident_span: ident.span,
+                            is_async,
+                            expect,
+                            ret_state,
+                            generics,
+                            par,
+                            is_extern: None,
+                            is_public,
+                            is_visible,
+                            worker_usage,
+                            block: FuncExpr::Cfg(cfg),
+                            stm_span: info.span,
+                        },
+                    );
+                } else {
+                    mod_cfg.funcs.insert(
+                        ident.ident.clone(),
+                        FuncDeclInfo {
+                            ident_span: ident.span,
+                            is_async,
+                            expect,
+                            ret_state,
+                            generics,
+                            par,
+                            is_extern,
+                            is_public,
+                            is_visible,
+                            worker_usage,
+                            block: FuncExpr::None,
+                            stm_span: info.span,
+                        },
+                    );
+                }
+            }
+            _ => (),
+        }
+    }
+}
+
+fn for_each_cust_block_cust_ty(mod_name: &String, custom_tys: &Vec<CustomLevel>, mod_cfg: &mut ModCFG, analyser: &mut Analyser) {
+    for each in custom_tys {
+        match each.clone() {
+            CustomLevel::EnumDecl {
+                ident,
+                generic_types,
+                vals,
+                traits,
+                public: is_enum_pub,
+                associateds,
+                bridges,
+                info,
+            } => {
+                let mut methods = HashMap::new();
+                let mut ass_functions = HashMap::new();
+                let mut ass_func_strs = vec![];
+                let mut meth_strs = vec![];
+
+                for ass in associateds {
+                    match ass {
+                        CustTyAss::AssFunction(func) => match func.clone() {
+                            AssFunc {
+                                worker_usage,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_extern,
+                                par,
+                                block,
+                                info,
+                            } => {
+                                if block.is_some() {
+                                    let block = block.unwrap();
+                                    let mut cfg = build_block(
+                                        ident.ident.clone(),
+                                        ret_state.clone(),
+                                        expect.clone(),
+                                        block,
+                                        mod_name.clone(),
+                                    );
+
+                                    cfg.compute_liveness();
+
+                                    // refine loan expiry points now that liveness is known
+                                    cfg.finalize_loan_lifetimes(); //
+
+                                    // run checks in dependency order
+                                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                                    // collect all errors
+                                    let all_errors: Vec<BorrowError> = move_errors
+                                        .into_iter()
+                                        .chain(borrow_errors)
+                                        .chain(lifetime_errs)
+                                        .collect();
+
+                                    add_errors(all_errors, analyser);
+
+                                    ass_functions.insert(
+                                        ident.ident.clone(),
+                                        StaticFunc {
+                                            ident_span: ident.span.clone(),
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: Some(cfg),
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                } else {
+                                    ass_functions.insert(
+                                        ident.ident.clone(),
+                                        StaticFunc {
+                                            ident_span: ident.span.clone(),
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+
+                                ass_func_strs.push(ident);
+                            }
+                        },
+                        CustTyAss::Method(meth) => match meth.clone() {
+                            Method {
+                                worker_usage,
+                                meth_self,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_extern,
+                                par,
+                                block,
+                                info,
+                            } => {
+                                if block.is_some() {
+                                    let block = block.unwrap();
+                                    let mut cfg = build_block(
+                                        ident.ident.clone(),
+                                        ret_state.clone(),
+                                        expect.clone(),
+                                        block,
+                                        mod_name.clone(),
+                                    );
+
+                                    cfg.compute_liveness();
+
+                                    // refine loan expiry points now that liveness is known
+                                    cfg.finalize_loan_lifetimes(); //
+
+                                    // run checks in dependency order
+                                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                                    // collect all errors
+                                    let all_errors: Vec<BorrowError> = move_errors
+                                        .into_iter()
+                                        .chain(borrow_errors)
+                                        .chain(lifetime_errs)
+                                        .collect();
+
+                                    add_errors(all_errors, analyser);
+
+                                    methods.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span.clone(),
+                                            meth_self,
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: Some(cfg),
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                } else {
+                                    methods.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span.clone(),
+                                            meth_self,
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+
+                                meth_strs.push(ident);
+                            }
+                        },
+                    }
+                }
+
+                let mut bgs = vec![];
+                for each in &bridges {
+                    match each.clone() {
+                        BridgeDecl {
+                            ass_state,
+                            ass_type,
+                            ass_ident,
+                            new_ty,
+                            public,
+                            block,
+                            info,
+                        } => {
+                            let mut cfg = build_block(
+                                ident.ident.clone(),
+                                DataState::Owner,
+                                TypeSpec {
+                                    hint: TypeHint::Custom {
+                                        import: None,
+                                        ident: new_ty.clone(),
+                                        generics: vec![],
+                                    },
+                                    span: new_ty.span.clone(),
+                                },
+                                block.clone(),
+                                mod_name.clone(),
+                            );
+
+                            cfg.compute_liveness();
+
+                            // refine loan expiry points now that liveness is known
+                            cfg.finalize_loan_lifetimes(); //
+
+                            // run checks in dependency order
+                            let move_errors = cfg.check_use_after_move(); // needs: nothing
+                            let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                            let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                            // collect all errors
+                            let all_errors: Vec<BorrowError> = move_errors
+                                .into_iter()
+                                .chain(borrow_errors)
+                                .chain(lifetime_errs)
+                                .collect();
+
+                            add_errors(all_errors, analyser);
+
+                            bgs.push(BridgeCfg {
+                                ass_ident,
+                                ass_state,
+                                ass_type,
+                                new_ty,
+                                is_public: public,
+                                block: cfg,
+                                stm_span: info.span,
+                            });
+                        }
+                    }
+                }
+
+                mod_cfg.custom_tys.insert(
+                    ident.ident.clone(),
+                    CustTypeInfo::EnumDeclInfo {
+                        ident_span: ident.span,
+                        is_public: is_enum_pub,
+                        generic_types,
+                        vals,
+                        traits,
+                        ass_func_strs,
+                        meth_strs,
+                        stm_span: info.span,
+                    },
+                );
+                mod_cfg.methods.insert(ident.ident.clone(), methods);
+                mod_cfg
+                    .static_meths
+                    .insert(ident.ident.clone(), ass_functions);
+                mod_cfg.bridges.insert(ident.ident.clone(), bgs);
+            }
+            CustomLevel::StructDecl {
+                ident,
+                generic_types,
+                vals,
+                traits,
+                public: is_struct_pub,
+                associateds,
+                bridges,
+                info,
+            } => {
+                let mut methods = HashMap::new();
+                let mut ass_functions = HashMap::new();
+                let mut ass_func_strs = vec![];
+                let mut meth_strs = vec![];
+                let mut brg_strs = vec![];
+
+                for ass in associateds {
+                    match ass {
+                        CustTyAss::AssFunction(func) => match func.clone() {
+                            AssFunc {
+                                worker_usage,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_extern,
+                                par,
+                                block,
+                                info,
+                            } => {
+                                if block.is_some() {
+                                    let block = block.unwrap();
+                                    let mut cfg = build_block(
+                                        ident.ident.clone(),
+                                        ret_state.clone(),
+                                        expect.clone(),
+                                        block,
+                                        mod_name.clone(),
+                                    );
+
+                                    cfg.compute_liveness();
+
+                                    // refine loan expiry points now that liveness is known
+                                    cfg.finalize_loan_lifetimes(); //
+
+                                    // run checks in dependency order
+                                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                                    // collect all errors
+                                    let all_errors: Vec<BorrowError> = move_errors
+                                        .into_iter()
+                                        .chain(borrow_errors)
+                                        .chain(lifetime_errs)
+                                        .collect();
+
+                                    add_errors(all_errors, analyser);
+
+                                    ass_functions.insert(
+                                        ident.ident.clone(),
+                                        StaticFunc {
+                                            ident_span: ident.span.clone(),
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: Some(cfg),
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                } else {
+                                    ass_functions.insert(
+                                        ident.ident.clone(),
+                                        StaticFunc {
+                                            ident_span: ident.span.clone(),
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+
+                                ass_func_strs.push(ident);
+                            }
+                        },
+                        CustTyAss::Method(meth) => match meth.clone() {
+                            Method {
+                                worker_usage,
+                                meth_self,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_extern,
+                                par,
+                                block,
+                                info,
+                            } => {
+                                if block.is_some() {
+                                    let block = block.unwrap();
+                                    let mut cfg = build_block(
+                                        ident.ident.clone(),
+                                        ret_state.clone(),
+                                        expect.clone(),
+                                        block,
+                                        mod_name.clone(),
+                                    );
+
+                                    cfg.compute_liveness();
+
+                                    // refine loan expiry points now that liveness is known
+                                    cfg.finalize_loan_lifetimes(); //
+
+                                    // run checks in dependency order
+                                    let move_errors = cfg.check_use_after_move(); // needs: nothing
+                                    let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                                    let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                                    // collect all errors
+                                    let all_errors: Vec<BorrowError> = move_errors
+                                        .into_iter()
+                                        .chain(borrow_errors)
+                                        .chain(lifetime_errs)
+                                        .collect();
+
+                                    add_errors(all_errors, analyser);
+
+                                    methods.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span.clone(),
+                                            meth_self,
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: Some(cfg),
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                } else {
+                                    methods.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span.clone(),
+                                            meth_self,
+                                            expect,
+                                            ret_state,
+                                            generics,
+                                            par,
+                                            is_extern,
+                                            is_public,
+                                            worker_usage,
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+
+                                meth_strs.push(ident);
+                            }
+                        },
+                    }
+                }
+
+                let mut bgs = vec![];
+                for each in &bridges {
+                    match each.clone() {
+                        BridgeDecl {
+                            ass_state,
+                            ass_type,
+                            ass_ident,
+                            new_ty,
+                            public,
+                            block,
+                            info,
+                        } => {
+                            let mut cfg = build_block(
+                                ident.ident.clone(),
+                                DataState::Owner,
+                                TypeSpec {
+                                    hint: TypeHint::Custom {
+                                        import: None,
+                                        ident: new_ty.clone(),
+                                        generics: vec![],
+                                    },
+                                    span: new_ty.span.clone(),
+                                },
+                                block.clone(),
+                                mod_name.clone(),
+                            );
+
+                            cfg.compute_liveness();
+
+                            // refine loan expiry points now that liveness is known
+                            cfg.finalize_loan_lifetimes(); //
+
+                            // run checks in dependency order
+                            let move_errors = cfg.check_use_after_move(); // needs: nothing
+                            let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
+                            let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
+
+                            // collect all errors
+                            let all_errors: Vec<BorrowError> = move_errors
+                                .into_iter()
+                                .chain(borrow_errors)
+                                .chain(lifetime_errs)
+                                .collect();
+
+                            add_errors(all_errors, analyser);
+
+                            bgs.push(BridgeCfg {
+                                ass_ident,
+                                ass_state,
+                                ass_type,
+                                new_ty,
+                                is_public: public,
+                                block: cfg,
+                                stm_span: info.span,
+                            });
+                            brg_strs.push(ident.clone());
+                        }
+                    }
+                }
+
+                mod_cfg.custom_tys.insert(
+                    ident.ident.clone(),
+                    CustTypeInfo::StructDeclInfo {
+                        ident_span: ident.span,
+                        is_public: is_struct_pub,
+                        generic_types,
+                        vals,
+                        traits,
+                        ass_func_strs,
+                        meth_strs,
+                        stm_span: info.span,
+                    },
+                );
+                mod_cfg.methods.insert(ident.ident.clone(), methods);
+                mod_cfg
+                    .static_meths
+                    .insert(ident.ident.clone(), ass_functions);
+                mod_cfg.bridges.insert(ident.ident.clone(), bgs);
+            }
+            _ => (),
+        }
+    }
+}
+
 pub fn gen_unit_cfg(analyser: &mut Analyser) -> HashMap<String, Resource> {
     let mut ret = HashMap::new();
 
@@ -296,7 +1588,7 @@ pub fn gen_unit_cfg(analyser: &mut Analyser) -> HashMap<String, Resource> {
                         main_fn,
                         macro_defs: _,
                         fns,
-                        platform_n_s: _,
+                        platform_n_s,
                         takes,
                         globals: _,
                         traits: _,
@@ -308,7 +1600,7 @@ pub fn gen_unit_cfg(analyser: &mut Analyser) -> HashMap<String, Resource> {
                     } => {
                         let mut mod_cfg = ModCFG {
                             globals: HashMap::new(),
-                            platform_n_s: HashMap::new(),
+                            platform_n_s: Vec::new(),
                             takes: HashMap::new(),
                             traits: HashMap::new(),
                             workers: HashMap::new(),
@@ -322,25 +1614,7 @@ pub fn gen_unit_cfg(analyser: &mut Analyser) -> HashMap<String, Resource> {
                         };
 
                         // FOR TAKES
-                        for take in takes {
-                            match take.clone() {
-                                TopLevel::TakeStmt {
-                                    take,
-                                    from,
-                                    lib,
-                                    info,
-                                } => match take.0.kind.clone() {
-                                    Token::Identifier(ident) => {
-                                        mod_cfg.takes.insert(
-                                            ident,
-                                            TakeStmtInfo { take, from, lib, stm_span: info.span }
-                                        );
-                                    },
-                                    _ => ()
-                                },
-                                _ => ()
-                            }
-                        }
+                        for_each_take(takes, &mut mod_cfg);
 
                         // FOR MAIN FUNCTION
                         if main_fn.is_some() {
@@ -400,624 +1674,66 @@ pub fn gen_unit_cfg(analyser: &mut Analyser) -> HashMap<String, Resource> {
                             }
                         }
 
-                        for func in fns {
-                            match func.clone() {
-                                TopLevel::FuncDecl {
-                                    is_async,
-                                    expect,
-                                    ret_state,
-                                    ident,
-                                    generics,
-                                    is_visible,
-                                    is_public,
-                                    is_extern,
-                                    par,
-                                    worker_usage,
-                                    block,
-                                    info,
-                                } => {
-                                    if is_extern.is_none() {
-                                        let mut cfg = build_block(
-                                            ident.ident.clone(),
-                                            ret_state.clone(),
-                                            expect.clone(),
-                                            block,
-                                            mod_name.clone(),
-                                        );
+                        for_each_func(&mod_name, fns, &mut mod_cfg, analyser);
 
-                                        cfg.compute_liveness();
+                        for_each_cust_ty(&mod_name, custom_tys, &mut mod_cfg, analyser);
 
-                                        // refine loan expiry points now that liveness is known
-                                        cfg.finalize_loan_lifetimes(); //
+                        for platform in platform_n_s {
+                            match platform {
+                                TopLevel::PlatformNS { arms, info } => {
+                                    let mut arms_infos = vec![];
 
-                                        // run checks in dependency order
-                                        let move_errors = cfg.check_use_after_move(); // needs: nothing
-                                        let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
-                                        let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
-
-                                        // collect all errors
-                                        let all_errors: Vec<BorrowError> = move_errors
-                                            .into_iter()
-                                            .chain(borrow_errors)
-                                            .chain(lifetime_errs)
-                                            .collect();
-
-                                        add_errors(all_errors, analyser);
-
-                                        mod_cfg.funcs.insert(
-                                            ident.ident.clone(),
-                                            FuncDeclInfo {
-                                                ident_span: ident.span,
-                                                is_async,
-                                                expect,
-                                                ret_state,
-                                                generics,
-                                                par,
-                                                is_extern: None,
-                                                is_public,
-                                                is_visible,
-                                                worker_usage,
-                                                block: FuncExpr::Cfg(cfg),
-                                                stm_span: info.span,
-                                            },
-                                        );
-                                    } else {
-                                        mod_cfg.funcs.insert(
-                                            ident.ident.clone(),
-                                            FuncDeclInfo {
-                                                ident_span: ident.span,
-                                                is_async,
-                                                expect,
-                                                ret_state,
-                                                generics,
-                                                par,
-                                                is_extern,
-                                                is_public,
-                                                is_visible,
-                                                worker_usage,
-                                                block: FuncExpr::None,
-                                                stm_span: info.span,
-                                            },
-                                        );
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        for each in custom_tys {
-                            match each.clone() {
-                                TopLevel::EnumDecl {
-                                    ident,
-                                    generic_types,
-                                    vals,
-                                    traits,
-                                    public: is_enum_pub,
-                                    associateds,
-                                    bridges,
-                                    info,
-                                } => {
-                                    let mut methods = HashMap::new();
-                                    let mut ass_functions = HashMap::new();
-                                    let mut ass_func_strs = vec![];
-                                    let mut meth_strs = vec![];
-
-                                    for ass in associateds {
-                                        match ass {
-                                            CustTyAss::AssFunction(func) => match func.clone() {
-                                                AssFunc {
-                                                    worker_usage,
-                                                    expect,
-                                                    ret_state,
-                                                    ident,
-                                                    generics,
-                                                    is_public,
-                                                    is_extern,
-                                                    par,
-                                                    block,
-                                                    info,
-                                                } => {
-                                                    if block.is_some() {
-                                                        let block = block.unwrap();
-                                                        let mut cfg = build_block(
-                                                            ident.ident.clone(),
-                                                            ret_state.clone(),
-                                                            expect.clone(),
-                                                            block,
-                                                            mod_name.clone(),
-                                                        );
-
-                                                        cfg.compute_liveness();
-
-                                                        // refine loan expiry points now that liveness is known
-                                                        cfg.finalize_loan_lifetimes(); //
-
-                                                        // run checks in dependency order
-                                                        let move_errors =
-                                                            cfg.check_use_after_move(); // needs: nothing
-                                                        let borrow_errors =
-                                                            cfg.check_borrow_conflicts(); // needs: loans populated
-                                                        let lifetime_errs =
-                                                            cfg.check_loan_lifetimes(); // needs: live_ranges + loans
-
-                                                        // collect all errors
-                                                        let all_errors: Vec<BorrowError> =
-                                                            move_errors
-                                                                .into_iter()
-                                                                .chain(borrow_errors)
-                                                                .chain(lifetime_errs)
-                                                                .collect();
-
-                                                        add_errors(all_errors, analyser);
-
-                                                        ass_functions.insert(
-                                                            ident.ident.clone(),
-                                                            StaticFunc {
-                                                                ident_span: ident.span.clone(),
-                                                                expect,
-                                                                ret_state,
-                                                                generics,
-                                                                par,
-                                                                is_extern,
-                                                                is_public,
-                                                                worker_usage,
-                                                                block: Some(cfg),
-                                                                stm_span: info.span,
-                                                            },
-                                                        );
-                                                    } else {
-                                                        ass_functions.insert(
-                                                            ident.ident.clone(),
-                                                            StaticFunc {
-                                                                ident_span: ident.span.clone(),
-                                                                expect,
-                                                                ret_state,
-                                                                generics,
-                                                                par,
-                                                                is_extern,
-                                                                is_public,
-                                                                worker_usage,
-                                                                block: None,
-                                                                stm_span: info.span,
-                                                            },
-                                                        );
-                                                    }
-
-                                                    ass_func_strs.push(ident);
-                                                }
-                                            },
-                                            CustTyAss::Method(meth) => match meth.clone() {
-                                                Method {
-                                                    worker_usage,
-                                                    meth_self,
-                                                    expect,
-                                                    ret_state,
-                                                    ident,
-                                                    generics,
-                                                    is_public,
-                                                    is_extern,
-                                                    par,
-                                                    block,
-                                                    info,
-                                                } => {
-                                                    if block.is_some() {
-                                                        let block = block.unwrap();
-                                                        let mut cfg = build_block(
-                                                            ident.ident.clone(),
-                                                            ret_state.clone(),
-                                                            expect.clone(),
-                                                            block,
-                                                            mod_name.clone(),
-                                                        );
-
-                                                        cfg.compute_liveness();
-
-                                                        // refine loan expiry points now that liveness is known
-                                                        cfg.finalize_loan_lifetimes(); //
-
-                                                        // run checks in dependency order
-                                                        let move_errors =
-                                                            cfg.check_use_after_move(); // needs: nothing
-                                                        let borrow_errors =
-                                                            cfg.check_borrow_conflicts(); // needs: loans populated
-                                                        let lifetime_errs =
-                                                            cfg.check_loan_lifetimes(); // needs: live_ranges + loans
-
-                                                        // collect all errors
-                                                        let all_errors: Vec<BorrowError> =
-                                                            move_errors
-                                                                .into_iter()
-                                                                .chain(borrow_errors)
-                                                                .chain(lifetime_errs)
-                                                                .collect();
-
-                                                        add_errors(all_errors, analyser);
-
-                                                        methods.insert(
-                                                            ident.ident.clone(),
-                                                            MethodCfg {
-                                                                ident_span: ident.span.clone(),
-                                                                meth_self,
-                                                                expect,
-                                                                ret_state,
-                                                                generics,
-                                                                par,
-                                                                is_extern,
-                                                                is_public,
-                                                                worker_usage,
-                                                                block: Some(cfg),
-                                                                stm_span: info.span,
-                                                            },
-                                                        );
-                                                    } else {
-                                                        methods.insert(
-                                                            ident.ident.clone(),
-                                                            MethodCfg {
-                                                                ident_span: ident.span.clone(),
-                                                                meth_self,
-                                                                expect,
-                                                                ret_state,
-                                                                generics,
-                                                                par,
-                                                                is_extern,
-                                                                is_public,
-                                                                worker_usage,
-                                                                block: None,
-                                                                stm_span: info.span,
-                                                            },
-                                                        );
-                                                    }
-
-                                                    meth_strs.push(ident);
-                                                }
-                                            },
-                                        }
-                                    }
-
-                                    let mut bgs = vec![];
-                                    for each in &bridges {
-                                        match each.clone() {
-                                            BridgeDecl {
-                                                ass_state,
-                                                ass_type,
-                                                ass_ident,
-                                                new_ty,
-                                                public,
+                                    for arm in arms {
+                                        match arm.clone() {
+                                            PlatformArm {
+                                                target,
                                                 block,
-                                                info,
-                                            } => {
-                                                let mut cfg = build_block(
-                                                    ident.ident.clone(),
-                                                    DataState::Owner,
-                                                    TypeSpec {
-                                                        hint: TypeHint::Custom {
-                                                            import: None,
-                                                            ident: new_ty.clone(),
-                                                            generics: vec![],
-                                                        },
-                                                        span: new_ty.span.clone(),
-                                                    },
-                                                    block.clone(),
-                                                    mod_name.clone(),
-                                                );
-
-                                                cfg.compute_liveness();
-
-                                                // refine loan expiry points now that liveness is known
-                                                cfg.finalize_loan_lifetimes(); //
-
-                                                // run checks in dependency order
-                                                let move_errors = cfg.check_use_after_move(); // needs: nothing
-                                                let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
-                                                let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
-
-                                                // collect all errors
-                                                let all_errors: Vec<BorrowError> = move_errors
-                                                    .into_iter()
-                                                    .chain(borrow_errors)
-                                                    .chain(lifetime_errs)
-                                                    .collect();
-
-                                                add_errors(all_errors, analyser);
-
-                                                bgs.push(BridgeCfg {
-                                                    ass_ident,
-                                                    ass_state,
-                                                    ass_type,
-                                                    new_ty,
-                                                    is_public: public,
-                                                    block: cfg,
-                                                    stm_span: info.span,
-                                                });
-                                            }
-                                        }
-                                    }
-
-                                    mod_cfg.custom_tys.insert(
-                                        ident.ident.clone(),
-                                        CustTypeInfo::EnumDeclInfo {
-                                            ident_span: ident.span,
-                                            is_public: is_enum_pub,
-                                            generic_types,
-                                            vals,
-                                            traits,
-                                            ass_func_strs,
-                                            meth_strs,
-                                            stm_span: info.span,
-                                        },
-                                    );
-                                    mod_cfg.methods.insert(ident.ident.clone(), methods);
-                                    mod_cfg
-                                        .static_meths
-                                        .insert(ident.ident.clone(), ass_functions);
-                                    mod_cfg.bridges.insert(ident.ident.clone(), bgs);
-                                }
-                                TopLevel::StructDecl {
-                                    ident,
-                                    generic_types,
-                                    vals,
-                                    traits,
-                                    public: is_struct_pub,
-                                    associateds,
-                                    bridges,
-                                    info,
-                                } => {
-                                    let mut methods = HashMap::new();
-                                    let mut ass_functions = HashMap::new();
-                                    let mut ass_func_strs = vec![];
-                                    let mut meth_strs = vec![];
-                                    let mut brg_strs = vec![];
-
-                                    for ass in associateds {
-                                        match ass {
-                                            CustTyAss::AssFunction(func) => match func.clone() {
-                                                AssFunc {
-                                                    worker_usage,
-                                                    expect,
-                                                    ret_state,
-                                                    ident,
-                                                    generics,
-                                                    is_public,
-                                                    is_extern,
-                                                    par,
-                                                    block,
-                                                    info,
+                                                span,
+                                            } => match &block {
+                                                CustomBlock {
+                                                    takes,
+                                                    globals: _,
+                                                    macro_def: _,
+                                                    custom_tys,
+                                                    traits: _,
+                                                    workers: _,
+                                                    funcs,
+                                                    platform_n_s: _,
+                                                    static_defs: _,
                                                 } => {
-                                                    if block.is_some() {
-                                                        let block = block.unwrap();
-                                                        let mut cfg = build_block(
-                                                            ident.ident.clone(),
-                                                            ret_state.clone(),
-                                                            expect.clone(),
-                                                            block,
-                                                            mod_name.clone(),
-                                                        );
+                                                    let mut platform_mod_cfg = ModCFG {
+                                                        globals: HashMap::new(),
+                                                        platform_n_s: Vec::new(),
+                                                        takes: HashMap::new(),
+                                                        traits: HashMap::new(),
+                                                        workers: HashMap::new(),
+                                                        statics: HashMap::new(),
+                                                        custom_tys: HashMap::new(),
+                                                        main_fn: None,
+                                                        funcs: HashMap::new(),
+                                                        methods: HashMap::new(),
+                                                        static_meths: HashMap::new(),
+                                                        bridges: HashMap::new(),
+                                                    };
+                                                
+                                                    // FOR TAKES
+                                                    for_each_cust_block_take(takes, &mut platform_mod_cfg);
+                                                
+                                                    for_each_cust_block_func(&mod_name, funcs, &mut platform_mod_cfg, analyser);
+                                                
+                                                    for_each_cust_block_cust_ty(&mod_name, custom_tys, &mut platform_mod_cfg, analyser);
 
-                                                        cfg.compute_liveness();
-
-                                                        // refine loan expiry points now that liveness is known
-                                                        cfg.finalize_loan_lifetimes(); //
-
-                                                        // run checks in dependency order
-                                                        let move_errors =
-                                                            cfg.check_use_after_move(); // needs: nothing
-                                                        let borrow_errors =
-                                                            cfg.check_borrow_conflicts(); // needs: loans populated
-                                                        let lifetime_errs =
-                                                            cfg.check_loan_lifetimes(); // needs: live_ranges + loans
-
-                                                        // collect all errors
-                                                        let all_errors: Vec<BorrowError> =
-                                                            move_errors
-                                                                .into_iter()
-                                                                .chain(borrow_errors)
-                                                                .chain(lifetime_errs)
-                                                                .collect();
-
-                                                        add_errors(all_errors, analyser);
-
-                                                        ass_functions.insert(
-                                                            ident.ident.clone(),
-                                                            StaticFunc {
-                                                                ident_span: ident.span.clone(),
-                                                                expect,
-                                                                ret_state,
-                                                                generics,
-                                                                par,
-                                                                is_extern,
-                                                                is_public,
-                                                                worker_usage,
-                                                                block: Some(cfg),
-                                                                stm_span: info.span,
-                                                            },
-                                                        );
-                                                    } else {
-                                                        ass_functions.insert(
-                                                            ident.ident.clone(),
-                                                            StaticFunc {
-                                                                ident_span: ident.span.clone(),
-                                                                expect,
-                                                                ret_state,
-                                                                generics,
-                                                                par,
-                                                                is_extern,
-                                                                is_public,
-                                                                worker_usage,
-                                                                block: None,
-                                                                stm_span: info.span,
-                                                            },
-                                                        );
-                                                    }
-
-                                                    ass_func_strs.push(ident);
-                                                }
-                                            },
-                                            CustTyAss::Method(meth) => match meth.clone() {
-                                                Method {
-                                                    worker_usage,
-                                                    meth_self,
-                                                    expect,
-                                                    ret_state,
-                                                    ident,
-                                                    generics,
-                                                    is_public,
-                                                    is_extern,
-                                                    par,
-                                                    block,
-                                                    info,
-                                                } => {
-                                                    if block.is_some() {
-                                                        let block = block.unwrap();
-                                                        let mut cfg = build_block(
-                                                            ident.ident.clone(),
-                                                            ret_state.clone(),
-                                                            expect.clone(),
-                                                            block,
-                                                            mod_name.clone(),
-                                                        );
-
-                                                        cfg.compute_liveness();
-
-                                                        // refine loan expiry points now that liveness is known
-                                                        cfg.finalize_loan_lifetimes(); //
-
-                                                        // run checks in dependency order
-                                                        let move_errors =
-                                                            cfg.check_use_after_move(); // needs: nothing
-                                                        let borrow_errors =
-                                                            cfg.check_borrow_conflicts(); // needs: loans populated
-                                                        let lifetime_errs =
-                                                            cfg.check_loan_lifetimes(); // needs: live_ranges + loans
-
-                                                        // collect all errors
-                                                        let all_errors: Vec<BorrowError> =
-                                                            move_errors
-                                                                .into_iter()
-                                                                .chain(borrow_errors)
-                                                                .chain(lifetime_errs)
-                                                                .collect();
-
-                                                        add_errors(all_errors, analyser);
-
-                                                        methods.insert(
-                                                            ident.ident.clone(),
-                                                            MethodCfg {
-                                                                ident_span: ident.span.clone(),
-                                                                meth_self,
-                                                                expect,
-                                                                ret_state,
-                                                                generics,
-                                                                par,
-                                                                is_extern,
-                                                                is_public,
-                                                                worker_usage,
-                                                                block: Some(cfg),
-                                                                stm_span: info.span,
-                                                            },
-                                                        );
-                                                    } else {
-                                                        methods.insert(
-                                                            ident.ident.clone(),
-                                                            MethodCfg {
-                                                                ident_span: ident.span.clone(),
-                                                                meth_self,
-                                                                expect,
-                                                                ret_state,
-                                                                generics,
-                                                                par,
-                                                                is_extern,
-                                                                is_public,
-                                                                worker_usage,
-                                                                block: None,
-                                                                stm_span: info.span,
-                                                            },
-                                                        );
-                                                    }
-
-                                                    meth_strs.push(ident);
+                                                    arms_infos.push(
+                                                        PlatformArmInfo { target, block: platform_mod_cfg, span }
+                                                    );
                                                 }
                                             },
                                         }
                                     }
 
-                                    let mut bgs = vec![];
-                                    for each in &bridges {
-                                        match each.clone() {
-                                            BridgeDecl {
-                                                ass_state,
-                                                ass_type,
-                                                ass_ident,
-                                                new_ty,
-                                                public,
-                                                block,
-                                                info,
-                                            } => {
-                                                let mut cfg = build_block(
-                                                    ident.ident.clone(),
-                                                    DataState::Owner,
-                                                    TypeSpec {
-                                                        hint: TypeHint::Custom {
-                                                            import: None,
-                                                            ident: new_ty.clone(),
-                                                            generics: vec![],
-                                                        },
-                                                        span: new_ty.span.clone(),
-                                                    },
-                                                    block.clone(),
-                                                    mod_name.clone(),
-                                                );
-
-                                                cfg.compute_liveness();
-
-                                                // refine loan expiry points now that liveness is known
-                                                cfg.finalize_loan_lifetimes(); //
-
-                                                // run checks in dependency order
-                                                let move_errors = cfg.check_use_after_move(); // needs: nothing
-                                                let borrow_errors = cfg.check_borrow_conflicts(); // needs: loans populated
-                                                let lifetime_errs = cfg.check_loan_lifetimes(); // needs: live_ranges + loans
-
-                                                // collect all errors
-                                                let all_errors: Vec<BorrowError> = move_errors
-                                                    .into_iter()
-                                                    .chain(borrow_errors)
-                                                    .chain(lifetime_errs)
-                                                    .collect();
-
-                                                add_errors(all_errors, analyser);
-
-                                                bgs.push(BridgeCfg {
-                                                    ass_ident,
-                                                    ass_state,
-                                                    ass_type,
-                                                    new_ty,
-                                                    is_public: public,
-                                                    block: cfg,
-                                                    stm_span: info.span,
-                                                });
-                                                brg_strs.push(ident.clone());
-                                            }
-                                        }
-                                    }
-
-                                    mod_cfg.custom_tys.insert(
-                                        ident.ident.clone(),
-                                        CustTypeInfo::StructDeclInfo {
-                                            ident_span: ident.span,
-                                            is_public: is_struct_pub,
-                                            generic_types,
-                                            vals,
-                                            traits,
-                                            ass_func_strs,
-                                            meth_strs,
-                                            stm_span: info.span,
-                                        },
+                                    mod_cfg.platform_n_s.push(
+                                        PlatformNSInfo { arms: arms_infos, stm_span: info.span.clone() }
                                     );
-                                    mod_cfg.methods.insert(ident.ident.clone(), methods);
-                                    mod_cfg
-                                        .static_meths
-                                        .insert(ident.ident.clone(), ass_functions);
-                                    mod_cfg.bridges.insert(ident.ident.clone(), bgs);
                                 }
                                 _ => (),
                             }

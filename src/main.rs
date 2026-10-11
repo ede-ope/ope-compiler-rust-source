@@ -40,7 +40,7 @@ pub enum BuildType {
 #[derive(Debug, Clone)]
 pub struct ComdInfo {
     pub filename: String,
-    pub target: Option<String>,
+    pub target: String,
     pub win: bool,
     pub make: Option<BuildType>,
     pub name: Option<String>,
@@ -57,6 +57,8 @@ pub struct ComdInfo {
 //         }
 //     }
 // }
+
+static VERSION: &'static str = "Ẹ̀dà 0.1.0";
 
 fn main() {
     let mut args: Vec<String> = env::args().collect();
@@ -86,7 +88,7 @@ fn main() {
                 print_usage();
                 process::exit(1);
             }
-            println!("Ẹ̀dà 0.1.0");
+            println!("{}", VERSION);
             process::exit(0);
         }
         _ => {
@@ -95,7 +97,14 @@ fn main() {
                 filename.push_str(".kui");
             }
 
-            let mut àfojúsùn: Option<String> = None;
+            // let get_host = env!("BUILD_HOST");
+
+            // if let Err(err) = get_host {
+            //     eprintln!("WARNING: {}\n    Target triple therefore defaults to x86_64-unknown-linux-gnu", err)
+            // }
+            
+            let mut àfojúsùn = env!("BUILD_HOST").to_string();
+            
             let mut fèrèsé = false;
             let mut ṣe: Option<BuildType> = None;
             let mut p: Option<String> = None;
@@ -118,7 +127,7 @@ fn main() {
                                 // kui main --àfojúsùn x86_64-pc-windows-gnu
                                 let target_triple = flags[i].clone();
                                 if is_target_triple(target_triple.clone()) {
-                                    àfojúsùn = Some(target_triple);
+                                    àfojúsùn = target_triple;
                                 } else {
                                     eprintln!("Unsupported target triple: {}", target_triple);
                                     print_supported_target_triple();

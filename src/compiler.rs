@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use colored::Colorize;
+use serde::Deserialize;
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 use zip::ZipArchive;
@@ -13,15 +13,15 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::{fs, vec};
 
-use crate::borrow_checker::{self, CustTypeInfo, FuncDeclInfo, ModCFG, Resource, TakeStmtInfo};
+use crate::borrow_checker::{self, ModCFG, Resource};
 use crate::codegen::Codegen;
 use crate::compiler::NameSpace::Singular;
 use crate::macro_expand::AstMacroExpandsion;
-use crate::parser::{Error, Ident, LibNextedLevel, ModPath, Parser, TopLevel}; // Import the parser // StaticBlock, StaticLevel,
-use crate::scanner::{LexedSelf, Span, Token};
+use crate::parser::{Error, Ident, LibNextedLevel, Parser, TopLevel}; // Import the parser // StaticBlock, StaticLevel,
+use crate::scanner::Pos;
+use crate::scanner::{LexedSelf, Span};
 use crate::toplevel_analyser::Analyser;
 use crate::{dk_expert, llvm::*, BuildType, ComdInfo};
-use crate::scanner::Pos;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -141,7 +141,7 @@ pub struct Package {
     authors: String,
     license: String,
     entry: String,
-    dependencies: Vec<String>
+    dependencies: Vec<String>,
 }
 
 pub fn handle_err(err: Vec<Error>, lines: HashMap<String, Vec<String>>) {
@@ -422,7 +422,7 @@ pub fn llvm_unsafe(cli: &ComdInfo, merged: LLVMModuleRef, base_name: &str, exe_d
     unsafe {
         // 1. Initialize targets
         match &cli.target {
-            Some(target_str) => match target_str.as_str() {
+            target_str => match target_str.as_str() {
                 t if t.contains("x86") || t.contains("i686") => {
                     LLVMInitializeX86TargetInfo();
                     LLVMInitializeX86Target();
@@ -448,26 +448,21 @@ pub fn llvm_unsafe(cli: &ComdInfo, merged: LLVMModuleRef, base_name: &str, exe_d
                     LLVMInitializeX86AsmPrinter();
                 }
             },
-            None => {
-                LLVMInitializeX86TargetInfo();
-                LLVMInitializeX86Target();
-                LLVMInitializeX86TargetMC();
-                LLVMInitializeX86AsmPrinter();
-            }
         }
 
         // 2. Get target triple
-        let triple = match &cli.target {
-            Some(t) => std::ffi::CString::new(t.as_str()).unwrap(),
-            None => {
-                let default = LLVMGetDefaultTargetTriple();
-                let s = std::ffi::CStr::from_ptr(default)
-                    .to_string_lossy()
-                    .to_string();
-                LLVMDisposeMessage(default);
-                std::ffi::CString::new(s).unwrap()
-            }
-        };
+        let triple = std::ffi::CString::new(cli.target.as_str()).unwrap();
+        //  match &cli.target {
+        //     Some(t) => std::ffi::CString::new(t.as_str()).unwrap(),
+        //     None => {
+        //         let default = LLVMGetDefaultTargetTriple();
+        //         let s = std::ffi::CStr::from_ptr(default)
+        //             .to_string_lossy()
+        //             .to_string();
+        //         LLVMDisposeMessage(default);
+        //         std::ffi::CString::new(s).unwrap()
+        //     }
+        // };
 
         // 3. Look up target
         let mut target: LLVMTargetRef = std::ptr::null_mut();
@@ -541,8 +536,10 @@ pub fn llvm_unsafe(cli: &ComdInfo, merged: LLVMModuleRef, base_name: &str, exe_d
                     handle_link_output(output, &obj_path, &exe_path);
                 } else if is_macos {
                     let _base_name = base_name; // no extension on macOS
+                    panic!("Darwin exe compilation not yet posible");
                 } else {
                     let _base_name = base_name; // no extension on Linux
+                    panic!("Linux exe compilation not yet posible");
                 };
             }
             // object file only — already emitted above
@@ -579,8 +576,10 @@ pub fn llvm_unsafe(cli: &ComdInfo, merged: LLVMModuleRef, base_name: &str, exe_d
                     handle_link_output(output, &obj_path, &dll_path);
                 } else if is_macos {
                     let _dylib_path = format!("lib{}.dylib", base_name);
+                    panic!("Darwin shared lib compilation not yet posible");
                 } else {
                     let _so_path = format!("lib{}.so", base_name);
+                    panic!("Linux shared lib compilation not yet posible");
                 };
             }
         }
@@ -590,15 +589,17 @@ pub fn llvm_unsafe(cli: &ComdInfo, merged: LLVMModuleRef, base_name: &str, exe_d
 }
 
 fn gen_from_mod_cfg(
-    name: &String,
+    name: String,
     cfg: &HashMap<String, Resource>,
     file: &ModCFG,
     each_mod_ir: &mut HashMap<String, Codegen>,
+
+    cli: &ComdInfo,
 ) {
     match file {
         ModCFG {
             globals: _,
-            platform_n_s: _,
+            platform_n_s,
             takes,
             traits: _,
             workers: _,
@@ -610,101 +611,46 @@ fn gen_from_mod_cfg(
             main_fn,
             funcs,
         } => {
-            let mut codegen = Codegen::new(name);
+            let mut target_arch = format!("");
+            match &cli.target {
+                target_str => match target_str.as_str() {
+                    t if t.contains("x86") || t.contains("i686") => {
+                        target_arch = format!("X86");
+                    }
+                    t if t.contains("aarch64") || t.contains("arm64") => {
+                        target_arch = format!("Arm")
+                    }
+                    t if t.contains("riscv") => target_arch = format!("Riscv"),
+                    _ => target_arch = format!(""),
+                },
+            }
+            let mut target_os = format!("");
+            match &cli.target {
+                target_str => match target_str.as_str() {
+                    t if t.contains("windows") => {
+                        target_os = format!("Windows");
+                    }
+                    t if t.contains("linux") => target_os = format!("Linux"),
+                    t if t.contains("Darwin") => target_os = format!("Darwin"),
+                    t if t.contains("apple") => target_os = format!("Darwin"),
+                    t if t.contains("android") => target_os = format!("Android"),
+                    t if t.contains("ios") => target_os = format!("IOS"),
+                    _ => target_os = format!(""),
+                },
+            }
+            let mut codegen = Codegen::new(name.clone(), target_os, target_arch);
             // register all type NAMES (opaque/forward declarations)
             codegen.hoist_type_names(custom_tys);
 
             // fill in type BODIES (now all names are known)
             codegen.hoist_type_bodies(custom_tys);
-            
-            for import in takes {
-                match import.1 {
-                    TakeStmtInfo {
-                        take,
-                        from,
-                        lib,
-                        stm_span: _,
-                    } => {
-                        if lib.is_none() {
-                            match from {
-                                ModPath::Ident(ident) => {
-                                    let src_mod = &cfg.get(&ident.ident);
-                                    
-                                    if src_mod.is_some() {
-                                        let src_mod = src_mod.unwrap();
-                                        match src_mod {
-                                            Resource::File(file_src_mod) | 
-                                            Resource::Package { entry: file_src_mod, src: _ }
-                                            // if it's package then, we are importing from it's entry
-                                             => {
-                                                match &take.0.kind {
-                                                    Token::Identifier(str) => {
-                                                        if let Some(src_def) =
-                                                            file_src_mod.custom_tys.get(str)
-                                                        {
-                                                            // // foreign type — opaque declaration, same name
-                                                            // let src_def = get_cust_from_oth(
-                                                            //     take.clone(),
-                                                            //     from.clone(),
-                                                            //     lib.clone(),
-                                                            //     &cfg,
-                                                            // );
-                                                            // if src_def.is_some() {
-                                                            //     let src_def = src_def.unwrap();
-                                                                match src_def {
-                                                                    CustTypeInfo::StructDeclInfo { .. } => {
-                                                                        codegen
-                                                                            .declare_foreign_struct_name(str);
-                                                                    }
-                                                                    CustTypeInfo::EnumDeclInfo { .. } => {
-                                                                        panic!("Enum not yet addressed")
-                                                                    }
-                                                                }
-                                                            // }
-                                                        } else if let Some(src_func) =
-                                                            file_src_mod.funcs.get(str)
-                                                        {
-                                                            // then it's a function,
-                                                            // let src_func = get_func_from_oth(
-                                                            //     take.clone(),
-                                                            //     from.clone(),
-                                                            //     lib.clone(),
-                                                            //     &cfg,
-                                                            // );
-                                                            // if src_func.is_some() {
-                                                            //     let src_func = src_func.unwrap();
-                                                                match &src_func {
-                                                                    FuncDeclInfo {
-                                                                        expect,
-                                                                        par,
-                                                                        ..
-                                                                    } => {
-                                                                        codegen
-                                                                            .gen_extern_function(
-                                                                                str, expect, par,
-                                                                                false,
-                                                                            );
-                                                                    }
-                                                                }
-                                                            // }
-                                                        }
-                                                    }
-                                                    _ => (),
-                                                }
-                                            }
-                                            Resource::Folder(_) => todo!(""),
-                                        }
-                                    }
-                                }
-                                _ => (), // if it's not a lib then the module most an ident
-                            }
-                        }
-                    }
-                }
-            }
+
+            codegen.hoist_take(takes, cfg);
 
             //
             codegen.hoist_functions(funcs);
+
+            codegen.hoist_platforms(platform_n_s, cfg);
 
             for f in funcs {
                 codegen.gen_func(f.0, f.1);
@@ -719,7 +665,7 @@ fn gen_from_mod_cfg(
             // codegen._dump();
             // codegen.dump();
 
-            each_mod_ir.insert(name.clone(), codegen);
+            each_mod_ir.insert(name, codegen);
         }
     }
 }
@@ -1007,7 +953,8 @@ pub fn compile_file(cli: ComdInfo) {
                                 }
                             }
 
-                            let manifest_ret: Result<DkManifest, toml::de::Error> = toml::from_str(&manifest_str);
+                            let manifest_ret: Result<DkManifest, toml::de::Error> =
+                                toml::from_str(&manifest_str);
 
                             let manifest;
                             if let Ok(m) = manifest_ret {
@@ -1021,7 +968,7 @@ pub fn compile_file(cli: ComdInfo) {
                                         version: String::new(),
                                         license: String::new(),
                                         entry: String::new(),
-                                        dependencies: vec![]
+                                        dependencies: vec![],
                                     },
                                 };
                             } else {
@@ -1033,14 +980,15 @@ pub fn compile_file(cli: ComdInfo) {
                                         version: String::new(),
                                         license: String::new(),
                                         entry: String::new(),
-                                        dependencies: vec![]
+                                        dependencies: vec![],
                                     },
                                 };
                             }
 
                             let mut entry = ModCFG::new();
                             {
-                                let mut get_entry = contents.by_name(&format!("{}.kk", manifest.package.entry));
+                                let mut get_entry =
+                                    contents.by_name(&format!("{}.kk", manifest.package.entry));
 
                                 if let Ok(entry_file) = &mut get_entry {
                                     let mut bytes = vec![];
@@ -1051,16 +999,17 @@ pub fn compile_file(cli: ComdInfo) {
 
                                         entry = kk_reader.gen_mod();
                                     } else if let Err(err) = gotten {
-
-                                        panic!("Problem reading {}.kk: {}", manifest.package.entry, err);
+                                        panic!(
+                                            "Problem reading {}.kk: {}",
+                                            manifest.package.entry, err
+                                        );
                                     } else {
                                         panic!("Problem parsing {}", lib.ident)
                                     }
                                 } else {
                                     println!(
                                         "Unable to read lib {} entry module: {}.kk",
-                                        lib.ident,
-                                        manifest.package.entry
+                                        lib.ident, manifest.package.entry
                                     );
                                 }
                             }
@@ -1124,39 +1073,39 @@ pub fn compile_file(cli: ComdInfo) {
                 //     .to_string(),
             };
             let cfg = borrow_checker::gen_unit_cfg(&mut analyses);
-            if cli.target.is_some() {
-                // CHECKING IF TARGET IS KUI PACKAGE
-                let target = cli.target.clone().unwrap();
-                if target == String::from("odù-kúì") || target == String::from("odu-kui") {
-                    println!("COMPILING KUI PACKAGE...");
-                    println!();
 
-                    let mut version = String::new();
-                    println!("\rEnter version: ");
-                    io::stdin().read_line(&mut version).unwrap();
-                    version.truncate(version.trim_end().len());
+            // CHECKING IF TARGET IS KUI PACKAGE
+            let target = cli.target.clone();
+            if target == String::from("odù-kúì") || target == String::from("odu-kui") {
+                println!("COMPILING KUI PACKAGE...");
+                println!();
 
-                    let mut authors = String::new();
-                    println!("\rEnter author names: ");
-                    io::stdin().read_line(&mut authors).unwrap();
-                    authors.truncate(authors.trim_end().len());
+                let mut version = String::new();
+                println!("\rEnter version: ");
+                io::stdin().read_line(&mut version).unwrap();
+                version.truncate(version.trim_end().len());
 
-                    let mut license = String::new();
-                    println!("\rEnter license: ");
-                    io::stdin().read_line(&mut license).unwrap();
-                    license.truncate(license.trim_end().len());
-                    // io::stdout().flush().unwrap();
+                let mut authors = String::new();
+                println!("\rEnter author names: ");
+                io::stdin().read_line(&mut authors).unwrap();
+                authors.truncate(authors.trim_end().len());
 
-                    let from_file = fs::File::create(format!("{}.dk", base_name));
+                let mut license = String::new();
+                println!("\rEnter license: ");
+                io::stdin().read_line(&mut license).unwrap();
+                license.truncate(license.trim_end().len());
+                // io::stdout().flush().unwrap();
 
-                    match from_file {
-                        Ok(file) => {
-                            let mut zip = zip::ZipWriter::new(file);
+                let from_file = fs::File::create(format!("{}.dk", base_name));
 
-                            let options = SimpleFileOptions::default()
-                                .compression_method(CompressionMethod::Deflated);
+                match from_file {
+                    Ok(file) => {
+                        let mut zip = zip::ZipWriter::new(file);
 
-                            let mut toml_content =
+                        let options = SimpleFileOptions::default()
+                            .compression_method(CompressionMethod::Deflated);
+
+                        let mut toml_content =
                             format!("[package]\nname = \"{}\"\nversion = \"{}\"\nauthors = \"{}\"\nlicense = \"{}\"\nentry = \"{}\"\n",
                                 base_name,
                                 version,
@@ -1165,52 +1114,50 @@ pub fn compile_file(cli: ComdInfo) {
                                 name
                             );
 
-                            let mut dependencies = format!("dependencies = [");
-                            for each_resource in &cfg {
-                                match each_resource.1 {
-                                    Resource::File(mod_cfg) => {
-                                        let path = format!("{}.kk", each_resource.0);
-                                        let _ = zip.start_file(path, options);
+                        let mut dependencies = format!("dependencies = [");
+                        for each_resource in &cfg {
+                            match each_resource.1 {
+                                Resource::File(mod_cfg) => {
+                                    let path = format!("{}.kk", each_resource.0);
+                                    let _ = zip.start_file(path, options);
 
-                                        let mut bin = dk_expert::KkWriter::new(&mod_cfg);
-                                        bin.gen_from_mod();
-                                        let _ = zip.write_all(&bin.buf);
-                                    }
-                                    Resource::Folder(_) => {}
-                                    Resource::Package { .. } => {
-                                        // add it to lib.toml dependency section
-                                        dependencies
-                                            .push_str(&format!("\"{}\", ", each_resource.0));
-                                    }
+                                    let mut bin = dk_expert::KkWriter::new(&mod_cfg);
+                                    bin.gen_from_mod();
+                                    let _ = zip.write_all(&bin.buf);
+                                }
+                                Resource::Folder(_) => {}
+                                Resource::Package { .. } => {
+                                    // add it to lib.toml dependency section
+                                    dependencies.push_str(&format!("\"{}\", ", each_resource.0));
                                 }
                             }
-                            dependencies.push_str(&format!("]\n"));
-
-                            toml_content.push_str(&dependencies);
-
-                            // add manifest file
-                            let _ = zip.start_file("lib.toml", options);
-                            let _ = zip.write_all(&toml_content.into_bytes());
-
-                            let _ = zip.finish();
-
-                            println!("packaged to {}.dk", base_name);
-                            println!("compilation was successful ✅\n");
                         }
-                        Err(err) => {
-                            syntax_errs.push(Error {
-                                message: format!("{}", err),
-                                span: Span {
-                                    st: Pos { column: 0, line: 0 },
-                                    en: Pos { column: 0, line: 0 },
-                                    file: format!(""),
-                                },
-                            });
-                        }
+                        dependencies.push_str(&format!("]\n"));
+
+                        toml_content.push_str(&dependencies);
+
+                        // add manifest file
+                        let _ = zip.start_file("lib.toml", options);
+                        let _ = zip.write_all(&toml_content.into_bytes());
+
+                        let _ = zip.finish();
+
+                        println!("packaged to {}.dk", base_name);
+                        println!("compilation was successful ✅\n");
                     }
-
-                    std::process::exit(0);
+                    Err(err) => {
+                        syntax_errs.push(Error {
+                            message: format!("{}", err),
+                            span: Span {
+                                st: Pos { column: 0, line: 0 },
+                                en: Pos { column: 0, line: 0 },
+                                file: format!(""),
+                            },
+                        });
+                    }
                 }
+
+                std::process::exit(0);
             }
             // println!("CFGs: {:#?}", _cfg);
 
@@ -1221,15 +1168,22 @@ pub fn compile_file(cli: ComdInfo) {
             for each_resource in &cfg {
                 match each_resource.1 {
                     Resource::File(file) => {
-                        gen_from_mod_cfg(each_resource.0, &cfg, file, &mut each_mod_ir);
+                        gen_from_mod_cfg(
+                            each_resource.0.clone(),
+                            &cfg,
+                            file,
+                            &mut each_mod_ir,
+                            &cli,
+                        );
                     }
                     Resource::Folder(_) => todo!("fold@name/mod"),
                     Resource::Package { entry, src: _ } => {
                         gen_from_mod_cfg(
-                            &format!("lib@{}/entry", each_resource.0),
+                            format!("lib@{}/entry", each_resource.0),
                             &cfg,
                             entry,
                             &mut each_mod_ir,
+                            &cli,
                         );
                     }
                 }

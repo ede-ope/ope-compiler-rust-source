@@ -158,7 +158,7 @@ impl CFGBuilder {
                 }
             }
             _ => {
-                todo!("This complex expression cannot yet be lowered to cfg: {}", expr.kind);
+                expr.clone()
             }
         }
     }

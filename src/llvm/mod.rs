@@ -302,7 +302,7 @@ extern "C" {
         T: *mut LLVMTargetRef,
         ErrorMessage: *mut *mut c_char,
     ) -> c_int;
-    pub fn LLVMGetDefaultTargetTriple() -> *mut c_char;
+    // pub fn LLVMGetDefaultTargetTriple() -> *mut c_char;
     pub fn LLVMGetNamedFunction(M: LLVMModuleRef, Name: *const c_char) -> LLVMValueRef;
 
     // Target initialization — call these before using any target

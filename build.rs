@@ -20,4 +20,7 @@ fn main() {
     
     // also add the bin dir so the .dll is found at runtime
     println!(r"cargo:rustc-link-search=native=C:\LLVM\bin");
+
+    let host = std::env::var("HOST").unwrap();
+    println!("cargo:rustc-env=BUILD_HOST={host}");
 }
