@@ -3488,7 +3488,7 @@ impl Parser {
                 kind: Token::StringLiteral(s),
                 span,
             }) => {
-                // mú mod/"path/mod.kui"/#macrocall
+                // mú mod/"path/mod.ope"/#macrocall
                 self.advance();
 
                 let from_str = Ident { ident: s, span };
@@ -3496,7 +3496,7 @@ impl Parser {
                 self.expect(&Token::Slash);
 
                 if self.peek_kind() == Some(Token::LBrace) {
-                    // mú mod/"path/mod.kui"/{...}
+                    // mú mod/"path/mod.ope"/{...}
                     self.advance();
                     let takes = self.get_take_mutip_elems();
 
@@ -3516,7 +3516,7 @@ impl Parser {
                         lib: Some(lib_or_mod_ident),
                     }
                 } else {
-                    // mú mod\"path/mod.kui"\#macrocall
+                    // mú mod\"path/mod.ope"\#macrocall
                     let take = self.get_take_elem();
 
                     let docs = self.end_stmt_parse(true);

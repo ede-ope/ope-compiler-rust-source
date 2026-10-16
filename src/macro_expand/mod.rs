@@ -11,7 +11,7 @@ use crate::parser::{
     Method, ModPath, Parser, PlatformArm, RepOperator, StmtInfo, TopLevel,
 };
 use crate::scanner::{FullTok, Pos, Span, Token};
-use crate::toplevel_analyser::Analyser;
+use crate::analyser::Analyser;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

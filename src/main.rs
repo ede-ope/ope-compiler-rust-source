@@ -2,14 +2,14 @@ use std::env;
 use std::process::{self};
 
 mod compiler;
-mod toplevel_analyser;
+mod analyser;
 // mod interprete;
-mod blocklevel_analyser;
+// mod blocklevel_analyser;
 mod borrow_checker;
 mod cfg_builder;
 mod cfg_resourses;
 mod codegen;
-mod dk_expert;
+mod dp_expert;
 mod macro_expand;
 mod move_checker;
 mod name_resolver;
@@ -93,8 +93,8 @@ fn main() {
         }
         _ => {
             let mut filename = args[1].clone();
-            if !filename.to_lowercase().ends_with(".kui") {
-                filename.push_str(".kui");
+            if !filename.to_lowercase().ends_with(".ope") {
+                filename.push_str(".ope");
             }
 
             // let get_host = env!("BUILD_HOST");
@@ -112,7 +112,7 @@ fn main() {
             if args.len() > 2 {
                 // means there are flags available
                 // index 2 is:
-                // kui main --àfojúsùn
+                // ope main --àfojúsùn
                 //  0    1     2
 
                 let flags = args.split_off(2);
@@ -120,11 +120,11 @@ fn main() {
                 while i < flags.len() {
                     match flags[i].as_str() {
                         "--àfojúsùn" | "--afojusun" => {
-                            // kui main --àfojúsùn
+                            // ope main --àfojúsùn
                             //advance
                             i += 1;
                             if flags.len() >= i + 1 {
-                                // kui main --àfojúsùn x86_64-pc-windows-gnu
+                                // ope main --àfojúsùn x86_64-pc-windows-gnu
                                 let target_triple = flags[i].clone();
                                 if is_target_triple(target_triple.clone()) {
                                     àfojúsùn = target_triple;
@@ -147,7 +147,7 @@ fn main() {
                                 // àjọlò --p èlò
                                 match flags[i].as_str() {
                                     "àjọlò" | "ajolo" => {
-                                        // kui main --ṣe àjọlò
+                                        // ope main --ṣe àjọlò
                                         ṣe = Some(BuildType::SharedLib);
                                     }
                                     "àdálò" | "adalo" => {
@@ -237,9 +237,9 @@ fn is_target_triple(target_triple: String) -> bool {
         target_triple == format!("x86_64-unknown-none") ||
         target_triple == format!("thumbv7m-none-eabi") ||
         target_triple == format!("riscv32imac-unknown-none-elf") ||
-        // kui lib
-        target_triple == format!("odù-kúì") ||
-        target_triple == format!("odu-kui")
+        // ope lib
+        target_triple == format!("odù-ọ̀pẹ") ||
+        target_triple == format!("odu-ope")
     {
         true
     } else {
@@ -269,20 +269,20 @@ fn print_supported_target_triple() {
     println!("   x86_64-unknown-none");
     println!("   thumbv7m-none-eabi");
     println!("   riscv32imac-unknown-none-elf");
-    println!("#kui lib");
-    println!("   odù-kúì");
-    println!("   odu-kui");
+    println!("#ope lib");
+    println!("   odù-ọ̀pẹ");
+    println!("   odu-ope");
 }
 
 fn print_usage() {
     println!("Usage:");
     println!("#For compilation");
-    // kui main --àfojúsùn x86_64-pc-windows-gnu --p app
-    println!("  kui <*source_file> [--àfojúsùn *target_triple] [--fèrèsé | --ṣe *build_type] [--p *given_name]");
-    println!("  To compile main.kui: kui main");
+    // ope main --àfojúsùn x86_64-pc-windows-gnu --p app
+    println!("  ope <*source_file> [--àfojúsùn *target_triple] [--fèrèsé | --ṣe *build_type] [--p *given_name]");
+    println!("  To compile main.ope: ope main");
     println!("other commands ->");
     println!("#Check version");
-    println!("  kui --ẹ̀dà");
+    println!("  ope --ẹ̀dà");
     println!("#To print info");
-    println!("  kui --tẹ <target_triple | >");
+    println!("  ope --tẹ <target_triple | >");
 }

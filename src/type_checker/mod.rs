@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
 use crate::{
-    blocklevel_analyser::{self, Expect},
+    analyser::blocklevel_analyser::{self, Expect},
     compiler::{ErrorHint, SemanticError},
     parser::{
         BlockLevel, DataState, Expr, ExprKind, Generic, InterfaceParam, MutStatus, StmtInfo,
         TopLevel, TypeHint, TypeSpec,
     },
     scanner::{Pos, Span, TruthVal},
-    toplevel_analyser::{Analyser, Element, Variable},
+    analyser::{Analyser, Element, Variable},
 };
 
 pub fn adjust_func_return(ret: &TypeSpec) -> TypeSpec {

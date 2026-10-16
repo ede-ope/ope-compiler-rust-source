@@ -2,7 +2,7 @@
 
 use crate::borrow_checker::ModCFG;
 // use crate::borrow_checker::{BorrowChecker, Var};
-use crate::toplevel_analyser::{Analyser, Element};
+use crate::analyser::{Analyser, Element};
 // use crate::borrow_checker::{BorrowChecker, Elem};
 use crate::compiler::{ErrorHint, Mod, NameSpace, SemanticError};
 use crate::parser::{

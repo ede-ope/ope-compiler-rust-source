@@ -1,8 +1,10 @@
+pub(crate) mod blocklevel_analyser;
+
 // use crate::borrow_checker::BorrowChecker;
 use crate::compiler::{ErrorHint, Mod, NameSpace, SemanticError};
 use crate::{name_resolver, type_checker};
 // use crate::name_resolver::{self, *};
-use crate::blocklevel_analyser::{self, Expect};
+use self::blocklevel_analyser::Expect;
 use crate::parser::{
     AssFunc, BlockLevel, BridgeDecl, CustTyAss, CustomBlock, CustomLevel, DataState, EnumVariants,
     Expr, ExprKind, Generic, Ident, InterfaceParam, Method, ModPath, Platform, PlatformArm,

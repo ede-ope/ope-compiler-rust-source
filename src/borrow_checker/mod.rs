@@ -9,7 +9,7 @@ use crate::parser::{
 };
 use crate::scanner::{FullTok, Span, Token};
 
-use crate::toplevel_analyser::Analyser;
+use crate::analyser::Analyser;
 //===================================================
 // Generative code
 //===================================================

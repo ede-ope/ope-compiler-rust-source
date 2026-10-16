@@ -2,7 +2,7 @@ use crate::{
     compiler::SemanticError,
     parser::{BlockLevel, DataState, Ident, TopLevel, TypeHint, TypeSpec},
     scanner::Span,
-    toplevel_analyser::{Analyser, Element},
+    analyser::{Analyser, Element},
 };
 
 pub fn check_ty_copy_impl(ty: &TypeSpec, analyser: &mut Analyser) -> bool {

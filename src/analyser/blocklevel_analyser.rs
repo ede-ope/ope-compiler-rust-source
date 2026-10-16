@@ -8,7 +8,7 @@ use crate::parser::{
     MutStatus, Parameter, StmtInfo, StructParam, TopLevel, TypeHint, TypeSpec,
 };
 use crate::scanner::{FullTok, Pos, Span, Token};
-use crate::toplevel_analyser::{Analyser, Element, Variable};
+use crate::analyser::{Analyser, Element, Variable};
 use crate::type_checker;
 use std::collections::HashMap;
 

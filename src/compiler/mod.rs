@@ -20,8 +20,8 @@ use crate::macro_expand::AstMacroExpandsion;
 use crate::parser::{Error, Ident, LibNextedLevel, Parser, TopLevel}; // Import the parser // StaticBlock, StaticLevel,
 use crate::scanner::Pos;
 use crate::scanner::{LexedSelf, Span};
-use crate::toplevel_analyser::Analyser;
-use crate::{dk_expert, llvm::*, BuildType, ComdInfo};
+use crate::analyser::Analyser;
+use crate::{dp_expert, llvm::*, BuildType, ComdInfo};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -742,10 +742,10 @@ pub fn compile_file(cli: ComdInfo) {
     }
 
     // ADD THE CORE MODULE
-    let kui_path = std::env::current_exe().unwrap();
-    let kui_dir = kui_path.parent().unwrap();
+    let ope_path = std::env::current_exe().unwrap();
+    let ope_dir = ope_path.parent().unwrap();
 
-    let core_mod_path = kui_dir.join("gbùngbùn.kui");
+    let core_mod_path = ope_dir.join("gbùngbùn.ope");
     // For every use
     // let path_check = is_file(&core_mod_path);
     // if let Ok(result) = path_check {
@@ -813,11 +813,11 @@ pub fn compile_file(cli: ComdInfo) {
                 info: _,
             } => {
                 let mod_path;
-                let mod_ident; // without the .kui extention
+                let mod_ident; // without the .ope extention
                 match module.clone() {
                     Ident { ident, span: _ } => {
                         mod_path = std::path::PathBuf::from(ident.clone())
-                            .with_extension("kui")
+                            .with_extension("ope")
                             .to_string_lossy()
                             .to_string();
 
@@ -848,7 +848,7 @@ pub fn compile_file(cli: ComdInfo) {
                             });
                         }
 
-                        if mod_path.to_lowercase().ends_with(".kui") {
+                        if mod_path.to_lowercase().ends_with(".ope") {
                             let mod_source = fs::read_to_string(&mod_path)
                                 .expect("Failed to read source file\n");
 
@@ -899,10 +899,10 @@ pub fn compile_file(cli: ComdInfo) {
                                 }
                             }
                         } else {
-                            // Error: Not a kui file
+                            // Error: Not a ope file
                             syntax_errs.push(Error {
                                 message: format!(
-                                    "The file {:#?} on line {} is not a .kui file",
+                                    "The file {:#?} on line {} is not a .ope file",
                                     module.ident.clone(),
                                     module.span.st.line.clone()
                                 ),
@@ -919,21 +919,21 @@ pub fn compile_file(cli: ComdInfo) {
                 module: lib,
                 info: _,
             } => {
-                let lib_ident; // without the .kui extention
+                let lib_ident; // without the .ope extention
                 match lib.clone() {
                     Ident { ident, span: _ } => {
                         lib_ident = ident;
                     }
                 }
-                // first check if it's on the lib folder from kui directory
-                let mut dk_name = lib.ident.clone();
-                if !dk_name.to_lowercase().ends_with(".dk") {
-                    dk_name.push_str(".dk");
+                // first check if it's on the lib folder from ope directory
+                let mut dp_name = lib.ident.clone();
+                if !dp_name.to_lowercase().ends_with(".dp") {
+                    dp_name.push_str(".dp");
                 }
-                let dk_path = exe_dir.join(format!("lib\\kui-global-libs\\{}", dk_name));
-                let dk_file = fs::File::open(dk_path);
+                let dp_path = exe_dir.join(format!("lib\\ope-global-libs\\{}", dp_name));
+                let dp_file = fs::File::open(dp_path);
 
-                if let Ok(file) = dk_file {
+                if let Ok(file) = dp_file {
                     let archive = ZipArchive::new(file);
 
                     match archive {
@@ -988,19 +988,19 @@ pub fn compile_file(cli: ComdInfo) {
                             let mut entry = ModCFG::new();
                             {
                                 let mut get_entry =
-                                    contents.by_name(&format!("{}.kk", manifest.package.entry));
+                                    contents.by_name(&format!("{}.pk", manifest.package.entry));
 
                                 if let Ok(entry_file) = &mut get_entry {
                                     let mut bytes = vec![];
                                     let gotten = entry_file.read_to_end(&mut bytes);
 
                                     if let Ok(_) = gotten {
-                                        let mut kk_reader = dk_expert::KkReader::new(&bytes);
+                                        let mut pk_reader = dp_expert::KkReader::new(&bytes);
 
-                                        entry = kk_reader.gen_mod();
+                                        entry = pk_reader.gen_mod();
                                     } else if let Err(err) = gotten {
                                         panic!(
-                                            "Problem reading {}.kk: {}",
+                                            "Problem reading {}.pk: {}",
                                             manifest.package.entry, err
                                         );
                                     } else {
@@ -1008,7 +1008,7 @@ pub fn compile_file(cli: ComdInfo) {
                                     }
                                 } else {
                                     println!(
-                                        "Unable to read lib {} entry module: {}.kk",
+                                        "Unable to read lib {} entry module: {}.pk",
                                         lib.ident, manifest.package.entry
                                     );
                                 }
@@ -1033,7 +1033,7 @@ pub fn compile_file(cli: ComdInfo) {
                             });
                         }
                     }
-                } else if let Err(error) = dk_file {
+                } else if let Err(error) = dp_file {
                     // Before emiting error, we should check if the path is provided in command
                     syntax_errs.push(Error {
                         message: format!("{}", error),
@@ -1076,7 +1076,7 @@ pub fn compile_file(cli: ComdInfo) {
 
             // CHECKING IF TARGET IS KUI PACKAGE
             let target = cli.target.clone();
-            if target == String::from("odù-kúì") || target == String::from("odu-kui") {
+            if target == String::from("odù-ọ̀pẹ") || target == String::from("odu-ope") {
                 println!("COMPILING KUI PACKAGE...");
                 println!();
 
@@ -1096,7 +1096,7 @@ pub fn compile_file(cli: ComdInfo) {
                 license.truncate(license.trim_end().len());
                 // io::stdout().flush().unwrap();
 
-                let from_file = fs::File::create(format!("{}.dk", base_name));
+                let from_file = fs::File::create(format!("{}.dp", base_name));
 
                 match from_file {
                     Ok(file) => {
@@ -1118,10 +1118,10 @@ pub fn compile_file(cli: ComdInfo) {
                         for each_resource in &cfg {
                             match each_resource.1 {
                                 Resource::File(mod_cfg) => {
-                                    let path = format!("{}.kk", each_resource.0);
+                                    let path = format!("{}.pk", each_resource.0);
                                     let _ = zip.start_file(path, options);
 
-                                    let mut bin = dk_expert::KkWriter::new(&mod_cfg);
+                                    let mut bin = dp_expert::KkWriter::new(&mod_cfg);
                                     bin.gen_from_mod();
                                     let _ = zip.write_all(&bin.buf);
                                 }
@@ -1142,7 +1142,7 @@ pub fn compile_file(cli: ComdInfo) {
 
                         let _ = zip.finish();
 
-                        println!("packaged to {}.dk", base_name);
+                        println!("packaged to {}.dp", base_name);
                         println!("compilation was successful ✅\n");
                     }
                     Err(err) => {

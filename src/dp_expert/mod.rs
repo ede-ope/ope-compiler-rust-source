@@ -847,7 +847,7 @@ impl<'a> KkReader<'a> {
 
     fn read_u8(&mut self) -> u8 {
         if self.cursor >= self.buf.len() {
-            panic!("unexpected end of .kk file")
+            panic!("unexpected end of .pk file")
         }
         let v = self.buf[self.cursor];
         self.cursor += 1; // advance
@@ -890,7 +890,7 @@ impl<'a> KkReader<'a> {
         let up_till = self.cursor + n;
 
         if up_till > self.buf.len() {
-            panic!("unexpected end of .kk file while reading bytes");
+            panic!("unexpected end of .pk file while reading bytes");
         }
         let slice = &self.buf[self.cursor..up_till];
 

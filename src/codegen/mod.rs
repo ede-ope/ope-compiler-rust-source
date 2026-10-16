@@ -199,7 +199,7 @@ impl Codegen {
             let fn_type = LLVMFunctionType(ret_type, std::ptr::null_mut(), 0, 0);
             let func = LLVMAddFunction(self.module, c"main".as_ptr(), fn_type);
 
-            let runtime_init = format!("__kui_runtime_init_inner");
+            let runtime_init = format!("__ope_runtime_init_inner");
             let runtime = self.gen_extern_function(
                 &runtime_init,
                 &TypeSpec {
@@ -330,8 +330,8 @@ impl Codegen {
 
                 if is_entry {
                     let (func, fn_type) = self
-                        .lookup_function(&format!("__kui_runtime_init_inner"))
-                        .expect(&format!("undefined function: {}", format!("__kui_runtime_init_inner")));
+                        .lookup_function(&format!("__ope_runtime_init_inner"))
+                        .expect(&format!("undefined function: {}", format!("__ope_runtime_init_inner")));
                             
                     let mut llvm_args: Vec<LLVMValueRef> = vec![];
                             
@@ -1458,10 +1458,11 @@ impl Codegen {
 
         // let target_str = cli.target.as_deref().unwrap_or("x86_64-pc-windows-gnu");
 
-        let lld = exe_dir.join("lib\\rust-lld.exe");
+        let lld = exe_dir.join("lib\\ope-lld.exe");
         let lld = if lld.exists() {
             lld
         } else {
+            eprintln!("❌ ope-lld not found");
             std::path::PathBuf::from(
                 r"C:\Users\HP\.rustup\toolchains\nightly-x86_64-pc-windows-gnu\lib\rustlib\x86_64-pc-windows-gnu\bin\rust-lld.exe",
             )
@@ -1522,7 +1523,7 @@ impl Codegen {
         // Libraries
         args.extend_from_slice(&[
             &lib_dir_display,
-            "-lkui_runtime",
+            "-lope_runtime",
             "-lgcc",
             "-lgcc_eh",
             "-lmingw32",
