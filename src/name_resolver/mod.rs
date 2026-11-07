@@ -1,240 +1,352 @@
 // use std::collections::HashMap;
 
-use crate::borrow_checker::ModCFG;
+use std::collections::HashMap;
+
+use crate::borrow_checker::MethodCfg;
 // use crate::borrow_checker::{BorrowChecker, Var};
-use crate::analyser::{Analyser, Element};
+use crate::analyser::Analyser;
 // use crate::borrow_checker::{BorrowChecker, Elem};
-use crate::compiler::{ErrorHint, Mod, NameSpace, SemanticError};
+use crate::compiler::{Mod, NameSpace, SemanticError};
 use crate::parser::{
-    BlockLevel, CustomBlock, CustomLevel, DataState, Expr, ExprKind, Ident, ModPath, PlatformArm,
-    StmtInfo, TopLevel,
+    BridgeDecl, CustTyAss, CustomBlock, CustomLevel, DataState, EnumVariants, Generic, Ident,
+    InterfaceParam, MacroGroup, Method, MethodSelf, OsArm, StmtInfo, StructParam, TopLevel,
+    TraitImpl, Trinary, TypeKey, TypeSpec,
 };
-use crate::scanner::{FullTok, Pos, Span, Token};
+use crate::scanner::Span;
 //
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum ElemSignature {
+    DocLines {
+        lines: Vec<String>,
+        span: Span,
+    },
+    ModlUse {
+        alias: Ident,
+        span: Span,
+    },
+    LibUse {
+        ident: Ident,
+        span: Span,
+    },
+    ModlTake {
+        name: Ident,
+        span: Span,
+    },
+    // TakeStmt {
+    //     elem: Box<ElemSignature>,
+    //     alias: Option<Ident>,
+    //     from: Vec<Ident>,
+    //     info: StmtInfo,
+    // },
+    GlobalDecl {
+        interpret: bool,
+        state: DataState,
+        ty: TypeSpec,
+        name: Ident,
+        public: bool,
+        span: Span,
+    },
+    EnumDecl {
+        ident: Ident,
+        generic_types: Vec<Generic>,
+        vals: Vec<EnumVariants>,
+        traits: Vec<(Ident, Vec<Ident>)>,
+        public: bool,
+        span: Span,
+    },
+    StructDecl {
+        ident: Ident,
+        generic_types: Vec<Generic>,
+        vals: Vec<StructParam>,
+        traits: Vec<(Ident, Vec<Ident>)>,
+        public: bool,
+        span: Span,
+    },
+    GenericType {
+        name: Ident,
+        traits: Vec<Ident>,
+    },
+    Param {
+        // into a function block
+        state: DataState,
+        ty: TypeSpec,
+        name: Ident,
+        mutable: bool,
+        info: StmtInfo,
+    },
+    FuncDecl {
+        is_async: bool,
+        expect: TypeSpec,
+        ret_state: DataState,
+        ident: Ident,
+        generics: Vec<Generic>,
+        is_visible: bool,
+        is_public: bool,
+        is_extern: Option<(Ident, Option<Span>)>,
+        par: Vec<InterfaceParam>,
+        worker_usage: Vec<(Ident, Vec<Ident>)>,
+        span: Span,
+    },
+    Bridges(HashMap<String, HashMap<TypeKey, BridgeDecl>>),
+    Methods(HashMap<TypeKey, HashMap<String, CustTyAss>>),
+    TraitImpls(HashMap<TypeKey, HashMap<String, TraitImpl>>),
+    PlatformNS {
+        arms: Vec<OsArm>,
+        span: Span,
+    },
+    WorkerDef {
+        ident: Ident,
+        func_name: Ident,
+        public: bool,
+        span: Span,
+    },
+    StaticDef {
+        ident: Ident,
+        public: bool,
+        span: Span,
+    },
+    TraitDef {
+        ident: Ident,
+        generic_types: Option<Ident>,
+        // interprets: Vec<BlockLevel>,
+        methods: HashMap<String, MethodCfg>,
+        is_public: bool,
+        span: Span,
+    },
+    WorkerUsage {
+        workers: Vec<Ident>,
+        span: Span,
+    },
+    VarDecl {
+        interpret: bool,
+        state: DataState,
+        ty: TypeSpec,
+        name: Ident,
+        mutable: bool,
+        span: Span,
+    },
+    UnInitVarDecl {
+        state: DataState,
+        ty: TypeSpec,
+        name: Ident,
+        mutable: bool,
+        span: Span,
+    },
+    ProjectLevel {},
+    Foo,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+#[allow(dead_code)]
+pub struct MacroCaseSignature {
+    pub pattern: MacroGroup,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+#[allow(dead_code)]
+pub enum CustTyAssSignature {
+    Method(MethSignature),
+    AssFunction(AssFuncSignature),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+#[allow(dead_code)]
+pub struct AssFuncSignature {
+    pub worker_usage: Vec<Ident>,
+    pub expect: TypeSpec,
+    pub ret_state: DataState,
+    pub ident: Ident,
+    pub generics: Vec<Generic>,
+    pub is_public: bool,
+    pub is_extern: Option<(Ident, Option<Span>)>,
+    pub par: Vec<InterfaceParam>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+#[allow(dead_code)]
+pub struct MethSignature {
+    pub worker_usage: Vec<Ident>,
+    pub meth_self: (MethodSelf, Span),
+    pub expect: TypeSpec,
+    pub ret_state: DataState,
+    pub ident: Ident,
+    pub generics: Option<Vec<Generic>>,
+    pub is_public: Trinary,
+    pub is_extern: Option<(Ident, Option<Span>)>,
+    pub par: Vec<InterfaceParam>,
+    pub span: Span,
+}
 
 fn add_to_global_scope(
     ident: Ident,
-    glo_elem: TopLevel,
-    // span: &Span,
+    glo_elem: ElemSignature,
+    modl: &String,
     analyser: &mut Analyser,
 ) {
-    if analyser.symbol_table[0].contains_key(&ident.ident) {
-        analyser.errs.push(SemanticError {
-            messages: vec![format!(
-                "There is a clash of name; Another global element already as the name '{}'",
-                ident.ident
-            )],
-            hints: vec![],
-            span: ident.span.clone(),
-        });
-    } else {
-        analyser.symbol_table[0].insert(ident.ident, Element::Global(glo_elem));
+    let symb_table = analyser.symbol_tables.get_mut(modl);
+
+    if symb_table.is_some() {
+        let symb = symb_table.unwrap();
+        if symb[0].contains_key(&ident.ident) {
+            analyser.errs.push(SemanticError {
+                messages: vec![format!(
+                    "There is a clash of name; Another global element already as the name '{}'",
+                    ident.ident
+                )],
+                hints: vec![],
+                span: ident.span.clone(),
+            });
+        } else {
+            symb[0].insert(ident.ident, glo_elem);
+        }
     }
 }
 
-fn check_cust_block_name_clash_with_outside(ident: Ident, analyser: &mut Analyser) {
-    if analyser.symbol_table[0].contains_key(&ident.ident) {
-        analyser.errs.push(SemanticError {
-            messages: vec![format!(
-                "There is a clash of name; Another global element already as the name '{}'",
-                ident.ident
-            )],
-            hints: vec![],
-            span: ident.span.clone(),
-        });
+fn check_cust_block_name_clash_with_outside(ident: Ident, modl: &String, analyser: &mut Analyser) {
+    let symb_table = analyser.symbol_tables.get(modl);
+
+    if symb_table.is_some() {
+        let symb = symb_table.unwrap();
+        if symb[0].contains_key(&ident.ident) {
+            analyser.errs.push(SemanticError {
+                messages: vec![format!(
+                    "There is a clash of name; Another global element already as the name '{}'",
+                    ident.ident
+                )],
+                hints: vec![],
+                span: ident.span.clone(),
+            });
+        }
     }
+}
+
+fn scan_for_elem(file: &Mod, get: Ident, analyser: &mut Analyser) -> bool {
+    let mut found = false;
+    for c_t in &file.custom_tys {
+        match c_t {
+            TopLevel::EnumDecl {
+                ident,
+                generic_types: _,
+                vals: _,
+                traits: _,
+                public,
+                info: _,
+            } => {
+                if get.ident == ident.ident {
+                    // found it
+                    found = true;
+                    if !public.clone() {
+                        analyser.errs.push(SemanticError {
+                            messages: vec![format!("'{}', is not public", ident.ident)],
+                            hints: vec![],
+                            span: get.span.clone(),
+                        });
+                    }
+                    break;
+                }
+            }
+            TopLevel::StructDecl {
+                ident,
+                generic_types: _,
+                vals: _,
+                traits: _,
+                public,
+                info: _,
+            } => {
+                if get.ident == ident.ident {
+                    // found it
+                    found = true;
+                    if !*public {
+                        analyser.errs.push(SemanticError {
+                            messages: vec![format!("'{}', is not public", ident.ident)],
+                            hints: vec![],
+                            span: get.span.clone(),
+                        });
+                    }
+                    break;
+                }
+            }
+            _ => (),
+        }
+    }
+
+    found
 }
 
 fn confirm_take_stm(
-    take: (FullTok, Option<Ident>),
-    from: ModPath,
-    lib: Option<Ident>,
+    take: (Ident, Option<Ident>),
+    from: Vec<Ident>, // len() of this should be at least == 1
     analyser: &mut Analyser,
 ) -> Ident {
-    let mod_ident = match &from {
-        ModPath::Ident(ident) => ident.clone(),
-        ModPath::Str(string) => string.clone(),
-        ModPath::FromLibFolder(f, m) => Ident {
-            ident: format!("{}/{}", f.ident, m.ident),
-            span: Span {
-                st: f.span.st,
-                en: m.span.en,
-                file: f.span.file.clone(),
-            },
-        },
-        ModPath::UnExpected => Ident {
-            ident: format!("Unknown"),
-            span: Span {
-                st: Pos { column: 0, line: 0 },
-                en: Pos { column: 0, line: 0 },
-                file: analyser.modl.clone(),
-            },
-        },
-    };
+    // this particular function is vulnarable when from is empty
+    // so the parser needs to make sure that it's not
+    // let get = take.0;
     let ident;
     if take.1.is_some() {
         ident = take.1.clone().unwrap();
     } else {
-        match take.0.clone() {
-            FullTok {
-                kind: Token::Identifier(i),
-                span,
-            } => {
-                ident = Ident { ident: i, span };
-            }
-            _ => {
-                ident = Ident {
-                    ident: String::from(""),
-                    span: Span {
-                        st: Pos { column: 0, line: 0 },
-                        en: Pos { column: 0, line: 0 },
-                        file: analyser.modl.clone(),
-                    },
-                };
-            }
-        }
+        ident = take.0
     }
     // We need to verify if they exist
     let mut found = false;
 
-    let key;
-    if lib == None {
-        match from {
-            ModPath::Ident(ident) => {
-                key = ident.ident;
-            }
-            _ => {
-                key = String::from("");
-            }
-        }
-    } else {
-        key = lib.clone().unwrap().ident;
-    }
+    // let key;
+    // if lib == None {
+    //     match from {
+    //         ModPath::Ident(ident) => {
+    //             key = ident.ident;
+    //         }
+    //         _ => {
+    //             key = String::from("");
+    //         }
+    //     }
+    // } else {
+    //     key = lib.clone().unwrap().ident;
+    // }
 
-    let module = analyser.unit.get(&key);
-    if module.is_some() {
-        let module = module.unwrap();
-        match module {
+    // let is_proj_lev = analyser.lib_list.contains(&from[0].ident);
+
+    let import = analyser.unit.get(&from[0].ident);
+    if import.is_some() {
+        let import = import.unwrap().clone();
+        match import {
             NameSpace::Singular { name: _, file } => {
-                // most be lib-None
-                for c_t in &file.custom_tys {
-                    match c_t {
-                        TopLevel::EnumDecl {
-                            ident,
-                            generic_types: _,
-                            vals: _,
-                            traits: _,
-                            public,
-                            associateds: _,
-                            bridges: _,
-                            info,
-                        } => {
-                            match take.0.clone().kind {
-                                Token::Identifier(s) => {
-                                    if s == ident.ident {
-                                        // found it
-                                        found = true;
-                                        if !public.clone() {
-                                            analyser.errs.push(SemanticError {
-                                                messages: vec![format!(
-                                                    "'{}', is not public",
-                                                    ident.ident
-                                                )],
-                                                hints: vec![ErrorHint {
-                                                    hints: vec![format!(
-                                                        "It was imported from here"
-                                                    )],
-                                                    span: mod_ident.span.clone(),
-                                                }],
-                                                span: info.span.clone(),
-                                            });
-                                        }
-                                        break;
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-                        TopLevel::StructDecl {
-                            ident,
-                            generic_types: _,
-                            vals: _,
-                            traits: _,
-                            public,
-                            associateds: _,
-                            bridges: _,
-                            info: _,
-                        } => {
-                            match take.0.clone().kind {
-                                Token::Identifier(s) => {
-                                    if s == ident.ident {
-                                        // found it
-                                        found = true;
-                                        if !*public {
-                                            analyser.errs.push(SemanticError {
-                                                messages: vec![format!(
-                                                    "'{}', is not public",
-                                                    ident.ident
-                                                )],
-                                                hints: vec![ErrorHint {
-                                                    hints: vec![format!(
-                                                        "It was imported from here"
-                                                    )],
-                                                    span: mod_ident.span.clone(),
-                                                }],
-                                                span: ident.span.clone(),
-                                            });
-                                        }
-                                        break;
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-                        _ => (),
-                    }
+                // when it's a local singular module
+                // then from can't have more than 2 Idents
+                if from.len() == 1 {
+                    // let frm = from.last().unwrap();
+                    found = scan_for_elem(&file, ident.clone(), analyser);
                 }
             }
-            NameSpace::Plural { name: _, files: _ } => {}
+            NameSpace::SecEntry {
+                name: _,
+                singulars: _,
+                file: _,
+            } => {}
             NameSpace::Lib {
                 name: _,
                 manifest: _,
-                entry,
+                entry: _,
+                ackn_panic: _,
                 src: _,
             } => {
-                if lib.is_none() {
-                    // this is obviously a lib
-                    // which means we are importing from it's entry
-                    match entry {
-                        ModCFG {
-                            globals: _,
-                            platform_n_s: _,
-                            takes: _,
-                            traits: _,
-                            workers: _,
-                            statics: _,
-                            custom_tys: _,
-                            methods: _,
-                            static_meths: _,
-                            bridges: _,
-                            main_fn: _,
-                            funcs,
-                        } => {
-                            for func in funcs {
-                                if *func.0 == ident.ident {
-                                    found = true;
-                                }
-                            }
-                        }
-                    }
-                }
+
+                // analyser.errs.push(SemanticError {
+                //     messages: vec![format!("An attempt to take from an element that belongs here")],
+                //     hints: vec![],
+                //     span: mod_ident.span.clone(),
+                // });
             }
         }
     } else {
         analyser.errs.push(SemanticError {
-            messages: vec![format!("Can't find module '{}'", mod_ident.ident)],
+            messages: vec![format!("Can't find module '{}'", from[0].ident)],
             hints: vec![],
-            span: mod_ident.span.clone(),
+            span: from[0].span.clone(),
         }); // for now
     }
 
@@ -242,7 +354,8 @@ fn confirm_take_stm(
         analyser.errs.push(SemanticError {
             messages: vec![format!(
                 "There is no '{}' at module '{}'",
-                ident.ident, mod_ident.ident
+                ident.ident,
+                from.last().unwrap().ident
             )],
             hints: vec![],
             span: ident.span.clone(),
@@ -252,1064 +365,760 @@ fn confirm_take_stm(
     ident
 }
 
-pub fn register_mod_level_elems(analyser: &mut Analyser, the_mod: &Mod) {
-    if analyser.modl != String::from("<gbùngbùn>") {
-        // we don't want to add elems to where the were originally defined
-        let zero_span = Span {
-            st: Pos { column: 0, line: 0 },
-            en: Pos { column: 0, line: 0 },
-            file: analyser.modl.clone(),
-        };
-
-        // Import everything in <gbùngbùn> with mú statement
-        let core_mod = analyser.unit.get(&String::from("<gbùngbùn>"));
-
-        if core_mod.is_some() {
-            let core_mod = core_mod.unwrap();
-
-            match core_mod.clone() {
-                NameSpace::Singular { name: _, file } => match file {
-                    Mod {
-                        mod_docs: _,
-                        main_fn: _,
-                        macro_defs,
-                        fns,
-                        platform_n_s,
-                        takes: _,
-                        globals,
-                        traits,
-                        workers,
-                        statics,
-                        custom_tys,
-                        lines: _,
-                        scope: 0,
+pub fn register_mod(name: &String, file: &Mod, analyser: &mut Analyser) {
+    match file {
+        Mod {
+            mods,
+            mod_docs: _,
+            main_fn: _,
+            panic_fn,
+            // macro_defs: _,
+            fns,
+            os_n_s,
+            arch_n_s: _,
+            takes,
+            globals,
+            traits,
+            workers,
+            statics,
+            custom_tys,
+            bridges: _,
+            methods: _,
+            trait_impls: _,
+            lines: _,
+            scope: _,
+        } => {
+            // for each use stm
+            for each in mods {
+                match each {
+                    TopLevel::UseStmt {
+                        path: _,
+                        is_sec_entry: _,
+                        alias,
+                        is_public: _,
+                        info,
                     } => {
-                        for sta in &statics {
-                            match sta.clone() {
-                                TopLevel::StaticDef {
+                        let elem = ElemSignature::ModlUse {
+                            alias: alias.clone(),
+                            span: info.span.clone(),
+                        };
+                        add_to_global_scope(alias.clone(), elem, name, analyser);
+                    }
+                    TopLevel::UseLibStmt {
+                        include,
+                        ackn_panic: _,
+                        info,
+                    } => {
+                        let elem = ElemSignature::LibUse {
+                            ident: include.clone(),
+                            span: info.span.clone(),
+                        };
+                        add_to_global_scope(include.clone(), elem, name, analyser);
+                    }
+                    _ => (),
+                }
+            }
+
+            // for takes
+
+            for each in takes {
+                match each {
+                    TopLevel::TakeStmt { take, from, info } => {
+                        // from has at least one element
+                        if analyser.lib_list.contains(&from[0].ident)
+                            || analyser.mod_list.contains(&from[0].ident)
+                        {
+                            let namespace = analyser.unit.get(&from[0].ident);
+
+                            match namespace {
+                                Some(NameSpace::Singular { name: _, file }) => {
+                                    if from.len() > 1 {
+                                        
+                                    } else {}
+                                }
+                                Some(NameSpace::SecEntry {
+                                    name,
+                                    singulars,
+                                    file,
+                                }) => {}
+                                Some(NameSpace::Lib {
+                                    name,
+                                    manifest,
+                                    entry,
+                                    ackn_panic,
+                                    src,
+                                }) => {}
+                                None => {
+                                    analyser.errs.push(SemanticError {
+                                        messages: vec![format!(
+                                            "'{}' not found in compilation unit",
+                                            from[0].ident,
+                                        )],
+                                        hints: vec![],
+                                        span: from[0].span.clone(),
+                                    });
+                                }
+                            }
+                            let elem = ElemSignature::ModlTake {
+                                name: from[0].clone(),
+                                span: info.span.clone(),
+                            };
+                            add_to_global_scope(from[0].clone(), elem, name, analyser);
+                        } else {
+                            analyser.errs.push(SemanticError {
+                                messages: vec![format!(
+                                    "There is no library or module with'{}' in this unit'{}'",
+                                    take.0.ident,
+                                    from.last().unwrap().ident
+                                )],
+                                hints: vec![],
+                                span: take.0.span.clone(),
+                            });
+                        }
+                    }
+                    _ => (),
+                }
+            }
+
+            // for panic function in mod
+            if panic_fn.is_some() {
+                match panic_fn.clone().unwrap() {
+                    TopLevel::Panic {
+                        ident,
+                        expect,
+                        worker_usage,
+                        generics,
+                        public,
+                        params,
+                        block: _,
+                        info,
+                    } => {
+                        // if expect.hint != TypeHint::End {
+                        //     analyser.errs.push(SemanticError {
+                        //         messages: vec![format!(
+                        //             "The panic function most have a return type of òpin"
+                        //         )],
+                        //         hints: vec![],
+                        //         span: ident.span,
+                        //     });
+                        // }
+
+                        // if params.len() != 2 {
+                        //     analyser.errs.push(SemanticError {
+                        //         messages: vec![format!(
+                        //             "Panic expects 2 parameters but {} was found".
+                        //             params.len()
+                        //         )],
+                        //         hints: vec![/* todo */],
+                        //         span: ident.span,
+                        //     });
+                        // } else {
+                        //     match params[0] {
+                        //         // str type
+                        //         InterfaceParam {
+                        //             ident: _,
+                        //             state,
+                        //             ty,
+                        //             is_mut,
+                        //             span,
+                        //         } => {
+                        //             match state {
+                        //                 DataState::ImutRef
+                        //             }
+                        //         }
+                        //     }
+                        // }
+                        let elem = ElemSignature::FuncDecl {
+                            is_async: false,
+                            expect,
+                            ret_state: DataState::Owner,
+                            ident: ident.clone(),
+                            generics,
+                            is_visible: false,
+                            is_public: public,
+                            is_extern: None,
+                            par: params,
+                            worker_usage,
+                            span: info.span.clone(),
+                        };
+                        add_to_global_scope(ident.clone(), elem, name, analyser);
+                    }
+                    _ => (),
+                }
+            }
+            // for cust types in mod
+            for each in custom_tys {
+                match each.clone() {
+                    TopLevel::EnumDecl {
+                        ident,
+                        generic_types,
+                        vals,
+                        traits,
+                        public,
+                        info,
+                    } => {
+                        // let mut ass: HashMap<String, CustTyAss> = HashMap::new();
+                        // for asso in associateds {
+                        //     match asso {
+                        //         CustTyAss::AssFunction(ass_func) => {
+                        //             ass.insert(
+                        //                 ass_func.ident.ident.clone(),
+                        //                 CustTyAss::AssFunction(ass_func),
+                        //             );
+                        //         }
+                        //         CustTyAss::Method(meth) => {
+                        //             ass.insert(meth.ident.ident.clone(), CustTyAss::Method(meth));
+                        //         }
+                        //     }
+                        // }
+                        // let mut brgs = HashMap::new();
+                        // for brg in bridges {
+                        //     let type_string = format!("{}", brg.ass_type.hint);
+                        //     brgs.insert(type_string, brg);
+                        // }
+
+                        let elem = ElemSignature::EnumDecl {
+                            ident: ident.clone(),
+                            generic_types,
+                            vals,
+                            traits,
+                            public,
+                            span: info.span.clone(),
+                        };
+                        add_to_global_scope(ident, elem, name, analyser);
+                    }
+                    TopLevel::StructDecl {
+                        ident,
+                        generic_types,
+                        vals,
+                        traits,
+                        public,
+                        info,
+                    } => {
+                        // let mut ass: HashMap<String, CustTyAss> = HashMap::new();
+                        // for asso in associateds {
+                        //     match asso {
+                        //         CustTyAss::AssFunction(ass_func) => {
+                        //             ass.insert(
+                        //                 ass_func.ident.ident.clone(),
+                        //                 CustTyAss::AssFunction(ass_func),
+                        //             );
+                        //         }
+                        //         CustTyAss::Method(meth) => {
+                        //             ass.insert(meth.ident.ident.clone(), CustTyAss::Method(meth));
+                        //         }
+                        //     }
+                        // }
+                        // let mut brgs = HashMap::new();
+                        // for brg in bridges {
+                        //     let type_string = format!("{}", brg.ass_type.hint);
+                        //     brgs.insert(type_string, brg);
+                        // }
+
+                        let elem = ElemSignature::StructDecl {
+                            ident: ident.clone(),
+                            generic_types,
+                            vals,
+                            traits,
+                            public,
+                            span: info.span.clone(),
+                        };
+                        add_to_global_scope(ident, elem, name, analyser);
+                    }
+                    _ => (),
+                }
+            }
+
+            // now register the variables
+            for each in globals {
+                match each.clone() {
+                    TopLevel::GlobalDecl {
+                        interpret,
+                        state,
+                        ty,
+                        name: ident, // should come with span, for precise error handling
+                        value: _,
+                        public,
+                        info,
+                    } => {
+                        let elem = ElemSignature::GlobalDecl {
+                            interpret,
+                            state,
+                            ty,
+                            name: ident.clone(),
+                            public,
+                            span: info.span.clone(),
+                        };
+                        add_to_global_scope(ident.clone(), elem, name, analyser);
+                    }
+                    _ => (),
+                }
+            }
+
+            // For Global functions
+            for each in fns {
+                match each.clone() {
+                    TopLevel::FuncDecl {
+                        is_async,
+                        expect,
+                        ret_state,
+                        ident,
+                        generics,
+                        is_visible,
+                        is_public,
+                        is_extern,
+                        par,
+                        worker_usage,
+                        block: _,
+                        info,
+                    } => {
+                        let elem = ElemSignature::FuncDecl {
+                            is_async,
+                            expect,
+                            ret_state,
+                            ident: ident.clone(),
+                            generics,
+                            is_visible,
+                            is_public,
+                            is_extern,
+                            par,
+                            worker_usage,
+                            span: info.span.clone(),
+                        };
+                        add_to_global_scope(ident.clone(), elem, name, analyser);
+                    }
+                    _ => (),
+                }
+            }
+
+            // For traits
+            for each in traits {
+                match each.clone() {
+                    TopLevel::TraitDef {
+                        ident,
+                        generic_types,
+                        methods,
+                        is_public,
+                        info,
+                    } => {
+                        let mut meth_cfg = HashMap::new();
+                        for meth in methods {
+                            match meth {
+                                Method {
+                                    worker_usage,
+                                    meth_self,
+                                    expect,
+                                    ret_state,
                                     ident,
-                                    public,
+                                    generics,
+                                    is_public,
+                                    is_extern,
+                                    par,
                                     block: _,
                                     info,
                                 } => {
-                                    if public {
-                                        add_to_global_scope(
-                                            ident.clone(),
-                                            TopLevel::TakeStmt {
-                                                take: (
-                                                    FullTok {
-                                                        kind: Token::Identifier(
-                                                            ident.ident.clone(),
-                                                        ),
-                                                        span: ident.span.clone(),
-                                                    },
-                                                    None,
-                                                ),
-                                                from: ModPath::Ident(Ident {
-                                                    ident: String::from("<gbùngbùn>"),
-                                                    span: zero_span.clone(),
-                                                }),
-                                                lib: None,
-                                                info: StmtInfo {
-                                                    span: ident.span.clone(),
-                                                    docs: info.docs,
-                                                },
-                                            },
-                                            analyser,
-                                        );
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        for wor in &workers {
-                            match wor.clone() {
-                                TopLevel::WorkerDef {
-                                    ident,
-                                    public,
-                                    info,
-                                    ..
-                                } => {
-                                    if public {
-                                        add_to_global_scope(
-                                            ident.clone(),
-                                            TopLevel::TakeStmt {
-                                                take: (
-                                                    FullTok {
-                                                        kind: Token::Identifier(
-                                                            ident.ident.clone(),
-                                                        ),
-                                                        span: ident.span.clone(),
-                                                    },
-                                                    None,
-                                                ),
-                                                from: ModPath::Ident(Ident {
-                                                    ident: String::from("<gbùngbùn>"),
-                                                    span: zero_span.clone(),
-                                                }),
-                                                lib: None,
-                                                info: StmtInfo {
-                                                    span: ident.span.clone(),
-                                                    docs: info.docs,
-                                                },
-                                            },
-                                            analyser,
-                                        );
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        for glob in &globals {
-                            match glob.clone() {
-                                TopLevel::GlobalDecl {
-                                    name, public, info, ..
-                                } => {
-                                    if public {
-                                        add_to_global_scope(
-                                            name.clone(),
-                                            TopLevel::TakeStmt {
-                                                take: (
-                                                    FullTok {
-                                                        kind: Token::Identifier(name.ident.clone()),
-                                                        span: name.span.clone(),
-                                                    },
-                                                    None,
-                                                ),
-                                                from: ModPath::Ident(Ident {
-                                                    ident: String::from("<gbùngbùn>"),
-                                                    span: zero_span.clone(),
-                                                }),
-                                                lib: None,
-                                                info: StmtInfo {
-                                                    span: name.span.clone(),
-                                                    docs: info.docs,
-                                                },
-                                            },
-                                            analyser,
-                                        );
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        for func in &fns {
-                            match func.clone() {
-                                TopLevel::FuncDecl {
-                                    ident,
-                                    is_public,
-                                    info,
-                                    ..
-                                } => {
-                                    if is_public {
-                                        add_to_global_scope(
-                                            ident.clone(),
-                                            TopLevel::TakeStmt {
-                                                take: (
-                                                    FullTok {
-                                                        kind: Token::Identifier(
-                                                            ident.ident.clone(),
-                                                        ),
-                                                        span: ident.span.clone(),
-                                                    },
-                                                    None,
-                                                ),
-                                                from: ModPath::Ident(Ident {
-                                                    ident: String::from("<gbùngbùn>"),
-                                                    span: zero_span.clone(),
-                                                }),
-                                                lib: None,
-                                                info: StmtInfo {
-                                                    span: ident.span.clone(),
-                                                    docs: info.docs,
-                                                },
-                                            },
-                                            analyser,
-                                        );
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        for plat in &platform_n_s {
-                            match plat.clone() {
-                                TopLevel::PlatformNS { arms, info: _ } => {
-                                    // Firstly: we need to get the functions that has síta flag
-                                    if arms.len() > 0 {
-                                        match &arms[0] {
-                                            PlatformArm {
-                                                target: _,
-                                                block,
-                                                span: _,
-                                            } => match &block {
-                                                CustomBlock { funcs, .. } => {
-                                                    for func in funcs {
-                                                        match func {
-                                                            CustomLevel::FuncDecl {
-                                                                ident,
-                                                                is_visible,
-                                                                info,
-                                                                ..
-                                                            } => {
-                                                                if *is_visible {
-                                                                    add_to_global_scope(
-                                                                        ident.clone(),
-                                                                        TopLevel::TakeStmt {
-                                                                            take: (
-                                                                                FullTok {
-                                                                                    kind: Token::Identifier(ident.ident.clone()),
-                                                                                    span: ident.span.clone(),
-                                                                                },
-                                                                                None,
-                                                                            ),
-                                                                            from: ModPath::Ident(Ident {
-                                                                                ident: String::from("<gbùngbùn>"),
-                                                                                span: zero_span.clone(),
-                                                                            }),
-                                                                            lib: None,
-                                                                            info: StmtInfo { span: ident.span.clone(), docs: info.docs.clone() },
-                                                                        },
-                                                                        analyser,
-                                                                    );
-                                                                }
-                                                            }
-                                                            _ => (),
-                                                        }
-                                                    }
-                                                }
-                                            },
-                                        }
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        for mac in &macro_defs {
-                            match mac.clone() {
-                                TopLevel::MacroDef {
-                                    ident,
-                                    is_public,
-                                    cases: _,
-                                    info,
-                                } => {
-                                    if is_public {
-                                        add_to_global_scope(
-                                            ident.clone(),
-                                            TopLevel::TakeStmt {
-                                                take: (
-                                                    FullTok {
-                                                        kind: Token::MacroCall(ident.ident),
-                                                        span: ident.span.clone(),
-                                                    },
-                                                    None,
-                                                ),
-                                                from: ModPath::Ident(Ident {
-                                                    ident: String::from("<gbùngbùn>"),
-                                                    span: zero_span.clone(),
-                                                }),
-                                                lib: None,
-                                                info: StmtInfo {
-                                                    span: ident.span.clone(),
-                                                    docs: info.docs.clone(),
-                                                },
-                                            },
-                                            analyser,
-                                        );
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        for trs in &traits {
-                            match trs {
-                                TopLevel::TraitDef {
-                                    ident,
-                                    generic_types: _,
-                                    interprets: _,
-                                    methods: _,
-                                    is_public,
-                                    info,
-                                } => {
-                                    if *is_public {
-                                        add_to_global_scope(
-                                            ident.clone(),
-                                            TopLevel::TakeStmt {
-                                                take: (
-                                                    FullTok {
-                                                        kind: Token::Identifier(
-                                                            ident.ident.clone(),
-                                                        ),
-                                                        span: ident.span.clone(),
-                                                    },
-                                                    None,
-                                                ),
-                                                from: ModPath::Ident(Ident {
-                                                    ident: String::from("<gbùngbùn>"),
-                                                    span: zero_span.clone(),
-                                                }),
-                                                lib: None,
-                                                info: StmtInfo {
-                                                    span: ident.span.clone(),
-                                                    docs: info.docs.clone(),
-                                                },
-                                            },
-                                            analyser,
-                                        );
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        for cust in &custom_tys {
-                            match cust {
-                                TopLevel::EnumDecl {
-                                    ident,
-                                    generic_types: _,
-                                    vals: _,
-                                    traits: _,
-                                    public,
-                                    associateds: _,
-                                    bridges: _,
-                                    info,
-                                }
-                                | TopLevel::StructDecl {
-                                    ident,
-                                    generic_types: _,
-                                    vals: _,
-                                    traits: _,
-                                    public,
-                                    associateds: _,
-                                    bridges: _,
-                                    info,
-                                } => {
-                                    if *public {
-                                        add_to_global_scope(
-                                            ident.clone(),
-                                            TopLevel::TakeStmt {
-                                                take: (
-                                                    FullTok {
-                                                        kind: Token::Identifier(
-                                                            ident.ident.clone(),
-                                                        ),
-                                                        span: ident.span.clone(),
-                                                    },
-                                                    None,
-                                                ),
-                                                from: ModPath::Ident(Ident {
-                                                    ident: String::from("<gbùngbùn>"),
-                                                    span: zero_span.clone(),
-                                                }),
-                                                lib: None,
-                                                info: StmtInfo {
-                                                    span: ident.span.clone(),
-                                                    docs: info.docs.clone(),
-                                                },
-                                            },
-                                            analyser,
-                                        );
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-                    }
-                    _ => (),
-                },
-                _ => (), // core is singular
-            }
-        } else {
-            //
-        }
-    }
-
-    // for cust types in mod
-    for each in &the_mod.custom_tys {
-        match each {
-            TopLevel::EnumDecl {
-                ident,
-                generic_types: _,
-                vals: _,
-                traits: _,
-                public: _,
-                associateds: _,
-                bridges: _,
-                info: _,
-            }
-            | TopLevel::StructDecl {
-                ident,
-                generic_types: _,
-                vals: _,
-                traits: _,
-                public: _,
-                associateds: _,
-                bridges: _,
-                info: _,
-            } => {
-                add_to_global_scope(ident.clone(), each.clone(), analyser);
-            }
-            _ => (),
-        }
-    }
-
-    // now register the variables
-    for each in &the_mod.globals {
-        match each {
-            TopLevel::GlobalDecl {
-                interpret: _,
-                state,
-                ty: _,
-                name, // should come with span, for precise error handling
-                value,
-                public: _,
-                info: _,
-            } => {
-                match state {
-                    DataState::GlobalImutRef => match value {
-                        Expr {
-                            kind: ExprKind::Ident { affix: _, ident: _ },
-                            span: _,
-                        } => (),
-                        _ => {
-                            analyser.errs.push(SemanticError {
-                                    messages: vec![format!(
-                                        "Global ImutRef variable '{}' must be assigned to another variable",
-                                        name.ident
-                                    )],
-                                    hints: vec![],
-                                    span: name.span.clone(),
-                                });
-                        }
-                    },
-                    DataState::GlobalMutRef => match value {
-                        Expr {
-                            kind: ExprKind::Ident { affix: _, ident: _ },
-                            span: _,
-                        } => (),
-                        _ => {
-                            analyser.errs.push(SemanticError {
-                                    messages: vec![format!(
-                                        "Global MutRef variable '{}' must be assigned to another variable",
-                                        name.ident
-                                    )],
-                                    hints: vec![],
-                                    span: name.span.clone(),
-                                });
-                        }
-                    },
-                    _ => (),
-                }
-                add_to_global_scope(name.clone(), each.clone(), analyser);
-            }
-            _ => (),
-        }
-    }
-
-    // For Global functions
-    for each in &the_mod.fns {
-        match each {
-            TopLevel::FuncDecl {
-                is_async: _,
-                expect: _,
-                ret_state: _,
-                ident,
-                generics: _,
-                is_visible: _,
-                is_public: _,
-                is_extern: _,
-                par: _,
-                worker_usage: _,
-                block: _,
-                info: _,
-            } => {
-                add_to_global_scope(ident.clone(), each.clone(), analyser);
-            }
-            _ => (),
-        }
-    }
-
-    // For takes
-    for each in &the_mod.takes {
-        match each.clone() {
-            TopLevel::TakeStmt {
-                take,
-                from,
-                lib,
-                info: _,
-            } => {
-                let ident = confirm_take_stm(take, from, lib, analyser);
-
-                add_to_global_scope(ident, each.clone(), analyser);
-            }
-            _ => (),
-        }
-    }
-
-    // For traits
-    for each in &the_mod.traits {
-        match each {
-            TopLevel::TraitDef {
-                ident,
-                generic_types: _,
-                interprets: _,
-                methods: _,
-                is_public: _,
-                info: _,
-            } => {
-                add_to_global_scope(ident.clone(), each.clone(), analyser);
-            }
-            _ => (),
-        }
-    }
-
-    // For workers
-    for each in &the_mod.workers {
-        match each {
-            TopLevel::WorkerDef {
-                ident,
-                func_name: _,
-                public: _,
-                block: _,
-                info: _,
-            } => {
-                add_to_global_scope(ident.clone(), each.clone(), analyser);
-            }
-            _ => (),
-        }
-    }
-
-    // For bundles
-    for each in &the_mod.statics {
-        match each {
-            TopLevel::StaticDef {
-                ident,
-                public: _,
-                block: _,
-                info: _,
-            } => {
-                add_to_global_scope(ident.clone(), each.clone(), analyser);
-            }
-            _ => (),
-        }
-    }
-
-    for each in &the_mod.platform_n_s {
-        match each {
-            TopLevel::PlatformNS { arms, info: _ } => {
-                // We need to check if the names of elements in each arms
-                // does not clash with the ones defined outside
-                for arm in arms {
-                    match &arm.block {
-                        CustomBlock {
-                            takes,
-                            globals,
-                            macro_def: _,
-                            custom_tys,
-                            traits,
-                            workers,
-                            funcs,
-                            platform_n_s: _,
-                            static_defs,
-                        } => {
-                            // For takes
-                            for each in takes {
-                                match each.clone() {
-                                    CustomLevel::TakeStmt {
-                                        take,
-                                        from,
-                                        lib,
-                                        info: _,
-                                    } => {
-                                        let ident = confirm_take_stm(take, from, lib, analyser);
-
-                                        check_cust_block_name_clash_with_outside(ident, analyser);
-                                    }
-                                    _ => (),
-                                }
-                            }
-
-                            // for cust types in mod
-                            for each in custom_tys {
-                                match each {
-                                    CustomLevel::EnumDecl {
-                                        ident,
-                                        generic_types: _,
-                                        vals: _,
-                                        traits: _,
-                                        public: _,
-                                        associateds: _,
-                                        bridges: _,
-                                        info: _,
-                                    }
-                                    | CustomLevel::StructDecl {
-                                        ident,
-                                        generic_types: _,
-                                        vals: _,
-                                        traits: _,
-                                        public: _,
-                                        associateds: _,
-                                        bridges: _,
-                                        info: _,
-                                    } => {
-                                        check_cust_block_name_clash_with_outside(ident.clone(), analyser);
-                                    }
-                                    _ => (),
-                                }
-                            }
-
-                            // now register the variables
-                            for each in globals {
-                                match each {
-                                    CustomLevel::GlobalDecl {
-                                        interpret: _,
-                                        state,
-                                        ty: _,
-                                        name, // should come with span, for precise error handling
-                                        value,
-                                        public: _,
-                                        info: _,
-                                    } => {
-                                        match state {
-                                            DataState::GlobalImutRef => match value {
-                                                Expr {
-                                                    kind: ExprKind::Ident { affix: _, ident: _ },
-                                                    span: _,
-                                                } => (),
-                                                _ => {
-                                                    analyser.errs.push(SemanticError {
-                                                        messages: vec![format!(
-                                                            "Global ImutRef variable '{}' must be assigned to another variable",
-                                                            name.ident
-                                                        )],
-                                                        hints: vec![],
-                                                        span: name.span.clone(),
-                                                    });
-                                                }
-                                            },
-                                            DataState::GlobalMutRef => match value {
-                                                Expr {
-                                                    kind: ExprKind::Ident { affix: _, ident: _ },
-                                                    span: _,
-                                                } => (),
-                                                _ => {
-                                                    analyser.errs.push(SemanticError {
-                                                        messages: vec![format!(
-                                                            "Global MutRef variable '{}' must be assigned to another variable",
-                                                            name.ident
-                                                        )],
-                                                        hints: vec![],
-                                                        span: name.span.clone(),
-                                                    });
-                                                }
-                                            },
-                                            _ => (),
-                                        }
-                                        check_cust_block_name_clash_with_outside(name.clone(), analyser);
-                                    }
-                                    _ => (),
-                                }
-                            }
-
-                            // For Global functions
-                            for each in funcs {
-                                match each {
-                                    CustomLevel::FuncDecl {
-                                        is_async: _,
-                                        expect: _,
-                                        ret_state: _,
-                                        ident,
-                                        generics: _,
-                                        is_visible: _,
-                                        is_public: _,
-                                        is_extern: _,
-                                        par: _,
-                                        worker_usage: _,
-                                        block: _,
-                                        info: _,
-                                    } => {
-                                        check_cust_block_name_clash_with_outside(ident.clone(), analyser);
-                                    }
-                                    _ => (),
-                                }
-                            }
-
-                            // For traits
-                            for each in traits {
-                                match each {
-                                    CustomLevel::TraitDef {
-                                        ident,
-                                        generic_types: _,
-                                        interprets: _,
-                                        methods: _,
-                                        is_public: _,
-                                        info: _,
-                                    } => {
-                                        check_cust_block_name_clash_with_outside(ident.clone(), analyser);
-                                    }
-                                    _ => (),
-                                }
-                            }
-
-                            // For workers
-                            for each in workers {
-                                match each {
-                                    CustomLevel::WorkerDef {
-                                        ident,
-                                        func_name: _,
-                                        public: _,
-                                        block: _,
-                                        info: _,
-                                    } => {
-                                        check_cust_block_name_clash_with_outside(ident.clone(), analyser);
-                                    }
-                                    _ => (),
-                                }
-                            }
-
-                            // For bundles
-                            for each in static_defs {
-                                match each {
-                                    CustomLevel::StaticDef {
-                                        ident,
-                                        public: _,
-                                        block: _,
-                                        info: _,
-                                    } => {
-                                        check_cust_block_name_clash_with_outside(ident.clone(), analyser);
-                                    }
-                                    _ => (),
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // then we need to add outside function signatures
-                if arms.len() > 0 {
-                    match arms[0].clone() {
-                        PlatformArm {
-                            target: _,
-                            block,
-                            span: _,
-                        } => match block {
-                            CustomBlock { funcs, .. } => {
-                                for func in funcs {
-                                    match func.clone() {
-                                        CustomLevel::FuncDecl {
-                                            is_async,
+                                    meth_cfg.insert(
+                                        ident.ident.clone(),
+                                        MethodCfg {
+                                            ident_span: ident.span,
+                                            worker_usage,
+                                            meth_self,
                                             expect,
                                             ret_state,
-                                            ident,
                                             generics,
-                                            is_public,
-                                            is_visible,
                                             is_extern,
+                                            is_public,
                                             par,
-                                            worker_usage,
-                                            block,
-                                            info,
-                                        } => {
-                                            if is_visible {
-                                                add_to_global_scope(
+                                            block: None,
+                                            stm_span: info.span,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        let elem = ElemSignature::TraitDef {
+                            ident: ident.clone(),
+                            generic_types,
+                            // interprets,
+                            methods: meth_cfg,
+                            is_public,
+                            span: info.span,
+                        };
+                        add_to_global_scope(ident, elem, &name, analyser);
+                    }
+                    _ => (),
+                }
+            }
+
+            // For workers
+            for each in workers {
+                match each.clone() {
+                    TopLevel::WorkerDef {
+                        ident,
+                        func_name,
+                        public,
+                        block: _,
+                        info,
+                    } => {
+                        let elem = ElemSignature::WorkerDef {
+                            ident: ident.clone(),
+                            func_name,
+                            public,
+                            span: info.span,
+                        };
+                        add_to_global_scope(ident, elem, &name, analyser);
+                    }
+                    _ => (),
+                }
+            }
+
+            // For bundles
+            for each in statics {
+                match each.clone() {
+                    TopLevel::StaticDef {
+                        ident,
+                        public,
+                        block: _,
+                        info,
+                    } => {
+                        let elem = ElemSignature::StaticDef {
+                            ident: ident.clone(),
+                            public,
+                            span: info.span,
+                        };
+                        add_to_global_scope(ident, elem, &name, analyser);
+                    }
+                    _ => (),
+                }
+            }
+
+            for each in os_n_s {
+                match each {
+                    TopLevel::OsTarget { arms, info: _ } => {
+                        // We need to check if the names of elements in each arms
+                        // does not clash with the ones defined outside
+                        for arm in arms {
+                            match &arm.block {
+                                CustomBlock {
+                                    takes,
+                                    globals,
+                                    // macro_def: _,
+                                    custom_tys,
+                                    traits,
+                                    workers,
+                                    funcs,
+                                    platform_n_s: _,
+                                    static_defs,
+                                } => {
+                                    // For takes
+                                    for each in takes {
+                                        match each.clone() {
+                                            CustomLevel::TakeStmt {
+                                                take,
+                                                from,
+                                                info: _,
+                                            } => {
+                                                let ident = confirm_take_stm(take, from, analyser);
+
+                                                check_cust_block_name_clash_with_outside(
+                                                    ident, &name, analyser,
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                    }
+
+                                    // for cust types in mod
+                                    for each in custom_tys {
+                                        match each {
+                                            CustomLevel::EnumDecl {
+                                                ident,
+                                                generic_types: _,
+                                                vals: _,
+                                                traits: _,
+                                                public: _,
+                                                info: _,
+                                            }
+                                            | CustomLevel::StructDecl {
+                                                ident,
+                                                generic_types: _,
+                                                vals: _,
+                                                traits: _,
+                                                public: _,
+                                                info: _,
+                                            } => {
+                                                check_cust_block_name_clash_with_outside(
                                                     ident.clone(),
-                                                    TopLevel::FuncDecl {
+                                                    &name,
+                                                    analyser,
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                    }
+
+                                    // now register the variables
+                                    for each in globals {
+                                        match each {
+                                            CustomLevel::GlobalDecl {
+                                                name: ident, // should come with span, for precise error handling
+                                                ..
+                                            } => {
+                                                // match state {
+                                                //     DataState::Ref => match value {
+                                                //         Expr {
+                                                //             kind:
+                                                //                 ExprKind::Ident { affix: _, ident: _ },
+                                                //             span: _,
+                                                //         } => (),
+                                                //         _ => {
+                                                //             analyser.errs.push(SemanticError {
+                                                //                                 messages: vec![format!(
+                                                //                                     "Global ImutRef variable '{}' must be assigned to another variable",
+                                                //                                     ident.ident
+                                                //                                 )],
+                                                //                                 hints: vec![],
+                                                //                                 span: ident.span.clone(),
+                                                //                             });
+                                                //         }
+                                                //     },
+                                                //     DataState::GlobalMutRef => match value {
+                                                //         Expr {
+                                                //             kind:
+                                                //                 ExprKind::Ident { affix: _, ident: _ },
+                                                //             span: _,
+                                                //         } => (),
+                                                //         _ => {
+                                                //             analyser.errs.push(SemanticError {
+                                                //                                 messages: vec![format!(
+                                                //                                     "Global MutRef variable '{}' must be assigned to another variable",
+                                                //                                     ident.ident
+                                                //                                 )],
+                                                //                                 hints: vec![],
+                                                //                                 span: ident.span.clone(),
+                                                //                             });
+                                                //         }
+                                                //     },
+                                                //     _ => (),
+                                                // }
+                                                check_cust_block_name_clash_with_outside(
+                                                    ident.clone(),
+                                                    &name,
+                                                    analyser,
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                    }
+
+                                    // For Global functions
+                                    for each in funcs {
+                                        match each {
+                                            CustomLevel::FuncDecl {
+                                                is_async: _,
+                                                expect: _,
+                                                ret_state: _,
+                                                ident,
+                                                generics: _,
+                                                is_visible: _,
+                                                is_public: _,
+                                                is_extern: _,
+                                                par: _,
+                                                worker_usage: _,
+                                                block: _,
+                                                info: _,
+                                            } => {
+                                                check_cust_block_name_clash_with_outside(
+                                                    ident.clone(),
+                                                    &name,
+                                                    analyser,
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                    }
+
+                                    // For traits
+                                    for each in traits {
+                                        match each {
+                                            CustomLevel::TraitDef {
+                                                ident,
+                                                generic_types: _,
+                                                // interprets: _,
+                                                methods: _,
+                                                is_public: _,
+                                                info: _,
+                                            } => {
+                                                check_cust_block_name_clash_with_outside(
+                                                    ident.clone(),
+                                                    &name,
+                                                    analyser,
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                    }
+
+                                    // For workers
+                                    for each in workers {
+                                        match each {
+                                            CustomLevel::WorkerDef {
+                                                ident,
+                                                func_name: _,
+                                                public: _,
+                                                block: _,
+                                                info: _,
+                                            } => {
+                                                check_cust_block_name_clash_with_outside(
+                                                    ident.clone(),
+                                                    &name,
+                                                    analyser,
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                    }
+
+                                    // For bundles
+                                    for each in static_defs {
+                                        match each {
+                                            CustomLevel::StaticDef {
+                                                ident,
+                                                public: _,
+                                                block: _,
+                                                info: _,
+                                            } => {
+                                                check_cust_block_name_clash_with_outside(
+                                                    ident.clone(),
+                                                    &name,
+                                                    analyser,
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // then we need to add outside function signatures
+                        if arms.len() > 0 {
+                            match arms[0].clone() {
+                                OsArm {
+                                    target: _,
+                                    block,
+                                    span: _,
+                                } => match block {
+                                    CustomBlock { funcs, .. } => {
+                                        for func in funcs {
+                                            match func.clone() {
+                                                CustomLevel::FuncDecl {
+                                                    is_async,
+                                                    expect,
+                                                    ret_state,
+                                                    ident,
+                                                    generics,
+                                                    is_public,
+                                                    is_visible,
+                                                    is_extern,
+                                                    par,
+                                                    worker_usage,
+                                                    block: _,
+                                                    info,
+                                                } => {
+                                                    let elem = ElemSignature::FuncDecl {
                                                         is_async,
                                                         expect,
                                                         ret_state,
-                                                        ident,
+                                                        ident: ident.clone(),
                                                         generics,
                                                         is_visible,
                                                         is_public,
                                                         is_extern,
                                                         par,
                                                         worker_usage,
-                                                        block: Expr {
-                                                            // placeholder, just for analyses
-                                                            //codegen will eventualy use the the correct block/expr
-                                                            kind: ExprKind::Foo,
-                                                            span: block.span,
-                                                        },
-                                                        info,
-                                                    },
-                                                    analyser,
-                                                );
+                                                        span: info.span,
+                                                    };
+                                                    if is_visible {
+                                                        add_to_global_scope(
+                                                            ident, elem, &name, analyser,
+                                                        );
+                                                    }
+                                                }
+                                                _ => (),
                                             }
                                         }
-                                        _ => (),
                                     }
-                                }
+                                },
                             }
-                        },
+                        }
                     }
+                    _ => (),
                 }
-
-                
             }
-            _ => (),
         }
     }
 }
 
-// pub fn register_global_for_borrorw_checker(checker: &mut BorrowChecker, the_mod: &Mod) {
-//     // there is no need to recheck for name clashes
-//     let mut storage = HashMap::new();
-
-//     // first register all global variables into storage
-//     for each in &the_mod.globals {
-//         match each {
-//             TopLevel::GlobalDecl {
-//                 interpret: _,
-//                 state,
-//                 ty: _,
-//                 name, // should come with span, for precise error handling
-//                 value,
-//                 public: _,
-//                 span: _,
-//             } => {
-//                 match state {
-//                     DataState::Global => {
-//                         storage.insert(
-//                             name.ident.clone(),
-//                             Var::Owner {
-//                                 imut_borrs: vec![],
-//                                 mut_borr: None,
-//                                 ident_span: name.span.clone(),
-//                             },
-//                         );
-//                     }
-//                     DataState::GlobalImutRef => {
-//                         match value {
-//                             Expr { kind: ExprKind::Ident { affix: _, ident }, span: _ } => {
-//                                 // most be ident
-//                                 let var = storage.get(&ident.ident);
-
-//                                 if var.is_some() {
-//                                     match var.unwrap() {
-//                                         Var::Owner {
-//                                             imut_borrs: _,
-//                                             mut_borr: _,
-//                                             ident_span: _,
-//                                         } => {
-//                                             storage.insert(
-//                                                 name.ident.clone(),
-//                                                 Var::Borrower {
-//                                                     owner: Some(ident.clone()), // for now
-//                                                     assigned: ident.clone(),
-//                                                     its_mut: false,
-//                                                     ident_span: name.span.clone(),
-//                                                 },
-//                                             );
-//                                         }
-//                                         Var::Borrower {
-//                                             owner,
-//                                             assigned: _,
-//                                             its_mut: _,
-//                                             ident_span: _,
-//                                         } => {
-//                                             if owner.is_some() {
-//                                                 storage.insert(
-//                                                     name.ident.clone(),
-//                                                     Var::Borrower {
-//                                                         owner: Some(owner.clone().unwrap()),
-//                                                         assigned: ident.clone(),
-//                                                         its_mut: false,
-//                                                         ident_span: name.span.clone(),
-//                                                     },
-//                                                 );
-//                                             } else {
-//                                                 storage.insert(
-//                                                     name.ident.clone(),
-//                                                     Var::Borrower {
-//                                                         owner: None, // for now
-//                                                         assigned: ident.clone(),
-//                                                         its_mut: false,
-//                                                         ident_span: name.span.clone(),
-//                                                     },
-//                                                 );
-//                                             }
-//                                         }
-//                                     }
-//                                 } else {
-//                                     storage.insert(
-//                                         name.ident.clone(),
-//                                         Var::Borrower {
-//                                             owner: None, // for now
-//                                             assigned: ident.clone(),
-//                                             its_mut: false,
-//                                             ident_span: name.span.clone(),
-//                                         },
-//                                     );
-//                                 }
-//                             }
-//                             _ => (),
-//                         }
-//                     }
-//                     DataState::GlobalMutRef => {
-//                         match value {
-//                             Expr { kind: ExprKind::Ident { affix: _, ident }, span: _ } => {
-//                                 // most be ident
-//                                 let var = storage.get(&ident.ident);
-
-//                                 if var.is_some() {
-//                                     match var.unwrap() {
-//                                         Var::Owner {
-//                                             imut_borrs: _,
-//                                             mut_borr: _,
-//                                             ident_span: _,
-//                                         } => {
-//                                             storage.insert(
-//                                                 name.ident.clone(),
-//                                                 Var::Borrower {
-//                                                     owner: Some(ident.clone()), // for now
-//                                                     assigned: ident.clone(),
-//                                                     its_mut: true,
-//                                                     ident_span: name.span.clone(),
-//                                                 },
-//                                             );
-//                                         }
-//                                         Var::Borrower {
-//                                             owner,
-//                                             assigned: _,
-//                                             its_mut: _,
-//                                             ident_span: _,
-//                                         } => {
-//                                             if owner.is_some() {
-//                                                 storage.insert(
-//                                                     name.ident.clone(),
-//                                                     Var::Borrower {
-//                                                         owner: Some(owner.clone().unwrap()),
-//                                                         assigned: ident.clone(),
-//                                                         its_mut: true,
-//                                                         ident_span: name.span.clone(),
-//                                                     },
-//                                                 );
-//                                             } else {
-//                                                 storage.insert(
-//                                                     name.ident.clone(),
-//                                                     Var::Borrower {
-//                                                         owner: None, // for now
-//                                                         assigned: ident.clone(),
-//                                                         its_mut: true,
-//                                                         ident_span: name.span.clone(),
-//                                                     },
-//                                                 );
-//                                             }
-//                                         }
-//                                     }
-//                                 } else {
-//                                     storage.insert(
-//                                         name.ident.clone(),
-//                                         Var::Borrower {
-//                                             owner: None, // for now
-//                                             assigned: ident.clone(),
-//                                             its_mut: true,
-//                                             ident_span: name.span.clone(),
-//                                         },
-//                                     );
-//                                 }
-//                             }
-//                             _ => (),
-//                         }
-//                     }
-//                     _ => (),
-//                 }
-//             }
-//             _ => (),
-//         }
-//     }
-
-//     // We need to make sure thet the owner of each ref is identified
-
-//     enum Attendance {
-//         Aye,
-//     }
-
-//     loop {
-//         let mut unresolved = vec![];
-
-//         for each in storage.clone() {
-//             match each.1 {
-//                 Var::Borrower {
-//                     owner,
-//                     assigned,
-//                     its_mut: _,
-//                     ident_span: _,
-//                 } => {
-//                     if owner.is_none() {
-//                         let ass = storage.get(&assigned.ident);
-
-//                         if ass.is_some() {
-//                             // should be there already
-//                             match ass.unwrap().clone() {
-//                                 Var::Borrower {
-//                                     owner,
-//                                     assigned,
-//                                     its_mut,
-//                                     ident_span,
-//                                 } => {
-//                                     if owner.is_some() {
-//                                         storage.insert(
-//                                             each.0.clone(),
-//                                             Var::Borrower {
-//                                                 owner,
-//                                                 assigned,
-//                                                 its_mut,
-//                                                 ident_span,
-//                                             },
-//                                         );
-//                                     } else {
-//                                         unresolved.push(Attendance::Aye);
-//                                     }
-//                                 }
-//                                 _ => (),
-//                             }
-//                         } else {
-//                             panic!("Unexpected execution");
-//                         }
-//                     }
-//                 }
-//                 _ => (),
-//             }
-//         }
-
-//         if unresolved.len() == 0 {
-//             break;
-//         }
-//     }
-
-//     // Now we register all the global variable into checker's symbol table
-//     // but now knowning the owner of all the borrowers
-//     for each in &storage {
-//         checker.symbol_table[0].insert(each.0.clone(), each.1.clone());
-//     }
-
-//     // println!("{:#?}", checker.symbol_table[0].get(&format!("orò")));
-// }
+pub fn register_mod_level_elems(analyser: &mut Analyser) {
+    let unit = analyser.unit.clone();
+    for modl in &unit {
+        match modl.1 {
+            NameSpace::Singular { name, file } => {
+                // if !analyser.cli.no_dgd {
+                //     // we want to add dgd(core lib) elems to the mod symbol table
+                //     let zero_span = Span {
+                //         st: Pos { column: 0, line: 0 },
+                //         en: Pos { column: 0, line: 0 },
+                //         file: analyser.modl.clone(),
+                //     };
+                // }
+                register_mod(name, file, analyser);
+            }
+            NameSpace::SecEntry {
+                name,
+                singulars: _,
+                file,
+            } => {
+                register_mod(name, file, analyser);
+            }
+            NameSpace::Lib {
+                name: _,
+                manifest: _,
+                entry: _,
+                ackn_panic: _,
+                src: _,
+            } => {
+                // AST will be regenrated for toplevel elements here
+                // which is just their signatures
+            }
+        }
+    }
+}
 
 pub fn add_to_local_scope(
     ident: Ident,
-    elem: BlockLevel,
-    // span: &Span,
+    elem: ElemSignature,
+    modl: &String,
     analyser: &mut Analyser,
 ) {
-    let index = analyser.symbol_table.len() - 1;
+    let md = analyser.symbol_tables.get_mut(modl);
 
-    if analyser.symbol_table[index].contains_key(&ident.ident) {
-        analyser.errs.push(SemanticError {
-            messages: vec![format!(
-                "There is a clash of name; Another local element already as the name '{}'",
-                ident.ident.clone()
-            )],
-            hints: vec![],
-            span: ident.span.clone(),
-        });
-    } else {
-        analyser.symbol_table[index].insert(ident.ident, Element::Local(elem));
+    if md.is_some() {
+        let md = md.unwrap();
+        let index = md.len() - 1;
+
+        if md[index].contains_key(&ident.ident) {
+            analyser.errs.push(SemanticError {
+                messages: vec![format!(
+                    "There is a clash of name; Another local element already as the name '{}'",
+                    ident.ident.clone()
+                )],
+                hints: vec![],
+                span: ident.span.clone(),
+            });
+        } else {
+            md[index].insert(ident.ident, elem);
+        }
     }
 }

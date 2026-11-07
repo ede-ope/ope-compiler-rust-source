@@ -1007,23 +1007,13 @@ impl<'a> AstMacroExpandsion<'a> {
                 }
                 BlockLevel::FuncCall { func, info } => match func.clone() {
                     Expr {
-                        kind:
-                            ExprKind::ElemNamespaceAccess {
-                                ident: static_ident,
-                                access: _,
-                            },
-                        span: static_span,
+                        kind: ExprKind::NamespaceAccess {..},
+                        ..
                     } => {
                         let expr = self.solve_for_expr(func.clone(), global);
 
                         ret.push(BlockLevel::FuncCall {
-                            func: Expr {
-                                kind: ExprKind::ElemNamespaceAccess {
-                                    ident: static_ident,
-                                    access: Box::new(expr),
-                                },
-                                span: static_span,
-                            },
+                            func: expr,
                             info,
                         });
                     }
@@ -1260,7 +1250,6 @@ impl<'a> AstMacroExpandsion<'a> {
                                                 }
                                             }
                                         }
-                                        Some(NameSpace::Plural { name: _, files: _ }) => {}
                                         Some(NameSpace::Lib { .. }) => {}
                                         None => {
                                             self.analyser.errs.push(SemanticError {
@@ -1369,80 +1358,90 @@ impl<'a> AstMacroExpandsion<'a> {
             }
             Expr {
                 kind:
-                    ExprKind::ElemNamespaceAccess {
+                    ExprKind::NamespaceAccess {
                         ident: static_ident,
-                        access: call,
+                        access: calls,
                     },
                 span,
-            } => match *call.clone() {
-                Expr {
-                    kind:
-                        ExprKind::Macro {
-                            name: _,
-                            delimiter: _,
-                            tokens: _,
-                        },
-                    span: _,
-                } => {
-                    let mut global_for_bundle = HashMap::new();
+            } => {
+                let mut new_access = vec![]; 
+                for call in &calls {
+                    match call {
+                        Expr {
+                            kind:
+                                ExprKind::Macro {
+                                    name: _,
+                                    delimiter: _,
+                                    tokens: _,
+                                },
+                            span: _,
+                        } => {
+                            let mut global_for_bundle = HashMap::new();
 
-                    let mut macro_rules = vec![];
+                            let mut macro_rules = vec![];
 
-                    let ident = static_ident.clone().unwrap().ident + &"--";
-                    let bundle = global.get(&ident);
+                            let ident = static_ident.clone().unwrap().ident + &"--";
+                            let bundle = global.get(&ident);
 
-                    if bundle.is_some() {
-                        // building it's own macro_rules for it's custom global
-                        match bundle.unwrap() {
-                            TopLevel::StaticDef {
-                                ident: _,
-                                public: _,
-                                block,
-                                info: _,
-                            } => {
-                                for item in &*block.macro_def {
-                                    match item {
-                                        CustomLevel::MacroDef {
-                                            ident,
-                                            is_public,
-                                            cases,
-                                            info,
-                                        } => {
-                                            macro_rules.push(TopLevel::MacroDef {
-                                                ident: ident.clone(),
-                                                is_public: is_public.clone(),
-                                                cases: cases.clone(),
-                                                info: info.clone(),
-                                            });
+                            if bundle.is_some() {
+                                // building it's own macro_rules for it's custom global
+                                match bundle.unwrap() {
+                                    TopLevel::StaticDef {
+                                        ident: _,
+                                        public: _,
+                                        block,
+                                        info: _,
+                                    } => {
+                                        for item in &*block.macro_def {
+                                            match item {
+                                                CustomLevel::MacroDef {
+                                                    ident,
+                                                    is_public,
+                                                    cases,
+                                                    info,
+                                                } => {
+                                                    macro_rules.push(TopLevel::MacroDef {
+                                                        ident: ident.clone(),
+                                                        is_public: is_public.clone(),
+                                                        cases: cases.clone(),
+                                                        info: info.clone(),
+                                                    });
+                                                }
+                                                _ => (),
+                                            }
                                         }
-                                        _ => (),
                                     }
+                                    _ => (),
                                 }
+                            } else {
+                                self.analyser.errs.push(SemanticError {
+                                    messages: vec![format!("Can't find Bundle '{:#?}' in scope", ident)],
+                                    hints: vec![],
+                                    span: span.clone(),
+                                });
                             }
-                            _ => (),
+
+                            self.populate_global(vec![], macro_rules, vec![], &mut global_for_bundle);
+
+                            // solving the macro expression
+                            let new_call = self.solve_for_expr(call.clone(), &mut global_for_bundle);
+
+                            new_access.push(new_call);
                         }
-                    } else {
-                        self.analyser.errs.push(SemanticError {
-                            messages: vec![format!("Can't find Bundle '{:#?}' in scope", ident)],
-                            hints: vec![],
-                            span: span.clone(),
-                        });
-                    }
-
-                    self.populate_global(vec![], macro_rules, vec![], &mut global_for_bundle);
-
-                    // solving the macro expression
-                    let new_call = self.solve_for_expr(*call.clone(), &mut global_for_bundle);
-
-                    Expr {
-                        kind: ExprKind::ElemNamespaceAccess {
-                            ident: static_ident,
-                            access: Box::new(new_call),
-                        },
-                        span,
+                        _ => {
+                            new_access.push(call.clone());
+                        }
                     }
                 }
-                _ => value,
+
+                Expr {
+                    kind:
+                        ExprKind::NamespaceAccess {
+                            ident: static_ident,
+                            access: new_access,
+                        },
+                    span,
+                }
             },
             Expr {
                 kind: ExprKind::Block(block),
@@ -1922,16 +1921,14 @@ impl<'a> AstMacroExpandsion<'a> {
                                 }
                             }
 
-                            for each in custom_tys {
-                                match each {
+                            for each in &custom_tys {
+                                match each.clone() {
                                     CustomLevel::EnumDecl {
                                         ident,
                                         generic_types,
                                         vals,
                                         traits,
                                         public,
-                                        associateds,
-                                        bridges,
                                         info,
                                     } => {
                                         top_custom_tys.push(TopLevel::EnumDecl {
@@ -1940,8 +1937,6 @@ impl<'a> AstMacroExpandsion<'a> {
                                             vals,
                                             traits,
                                             public,
-                                            associateds,
-                                            bridges,
                                             info,
                                         });
                                     }
@@ -1951,8 +1946,6 @@ impl<'a> AstMacroExpandsion<'a> {
                                         vals,
                                         traits,
                                         public,
-                                        associateds,
-                                        bridges,
                                         info,
                                     } => {
                                         top_custom_tys.push(TopLevel::StructDecl {
@@ -1961,8 +1954,6 @@ impl<'a> AstMacroExpandsion<'a> {
                                             vals,
                                             traits,
                                             public,
-                                            associateds,
-                                            bridges,
                                             info,
                                         });
                                     }
@@ -2076,7 +2067,7 @@ impl<'a> AstMacroExpandsion<'a> {
                             takes: takes.clone(),
                             globals: vec![],
                             macro_def: vec![],
-                            custom_tys: vec![],
+                            custom_tys: custom_tys,
                             traits: vec![],
                             workers: vec![],
                             funcs: vec![],
@@ -2177,55 +2168,47 @@ impl<'a> AstMacroExpandsion<'a> {
                         }
 
                         // Types
-                        for custm in &top_custom_tys {
-                            let top = self.for_cust_type(custm.clone(), &mut static_global);
+                        // for custm in &top_custom_tys {
+                        //     let top = self.for_cust_type(custm.clone(), &mut static_global);
 
-                            match top {
-                                TopLevel::EnumDecl {
-                                    ident,
-                                    generic_types,
-                                    vals,
-                                    traits,
-                                    public,
-                                    associateds,
-                                    bridges,
-                                    info,
-                                } => {
-                                    static_block.custom_tys.push(CustomLevel::EnumDecl {
-                                        ident,
-                                        generic_types,
-                                        vals,
-                                        traits,
-                                        public,
-                                        associateds,
-                                        bridges,
-                                        info,
-                                    });
-                                }
-                                TopLevel::StructDecl {
-                                    ident,
-                                    generic_types,
-                                    vals,
-                                    traits,
-                                    public,
-                                    associateds,
-                                    bridges,
-                                    info,
-                                } => {
-                                    static_block.custom_tys.push(CustomLevel::StructDecl {
-                                        ident,
-                                        generic_types,
-                                        vals,
-                                        traits,
-                                        public,
-                                        associateds,
-                                        bridges,
-                                        info,
-                                    });
-                                }
-                                _ => (),
-                            }
-                        }
+                        //     match top {
+                        //         TopLevel::EnumDecl {
+                        //             ident,
+                        //             generic_types,
+                        //             vals,
+                        //             traits,
+                        //             public,
+                        //             info,
+                        //         } => {
+                        //             static_block.custom_tys.push(CustomLevel::EnumDecl {
+                        //                 ident,
+                        //                 generic_types,
+                        //                 vals,
+                        //                 traits,
+                        //                 public,
+                        //                 info,
+                        //             });
+                        //         }
+                        //         TopLevel::StructDecl {
+                        //             ident,
+                        //             generic_types,
+                        //             vals,
+                        //             traits,
+                        //             public,
+                        //             info,
+                        //         } => {
+                        //             static_block.custom_tys.push(CustomLevel::StructDecl {
+                        //                 ident,
+                        //                 generic_types,
+                        //                 vals,
+                        //                 traits,
+                        //                 public,
+                        //                 info,
+                        //             });
+                        //         }
+                        //         _ => (),
+                        //     }
+                        // }
 
                         // Workers
                         for worker in &top_workers {
@@ -2369,16 +2352,14 @@ impl<'a> AstMacroExpandsion<'a> {
                                             }
                                         }
 
-                                        for each in custom_tys {
-                                            match each {
+                                        for each in &custom_tys {
+                                            match each.clone() {
                                                 CustomLevel::EnumDecl {
                                                     ident,
                                                     generic_types,
                                                     vals,
                                                     traits,
                                                     public,
-                                                    associateds,
-                                                    bridges,
                                                     info,
                                                 } => {
                                                     top_custom_tys.push(TopLevel::EnumDecl {
@@ -2387,8 +2368,6 @@ impl<'a> AstMacroExpandsion<'a> {
                                                         vals,
                                                         traits,
                                                         public,
-                                                        associateds,
-                                                        bridges,
                                                         info,
                                                     });
                                                 }
@@ -2398,8 +2377,6 @@ impl<'a> AstMacroExpandsion<'a> {
                                                     vals,
                                                     traits,
                                                     public,
-                                                    associateds,
-                                                    bridges,
                                                     info,
                                                 } => {
                                                     top_custom_tys.push(TopLevel::StructDecl {
@@ -2408,8 +2385,6 @@ impl<'a> AstMacroExpandsion<'a> {
                                                         vals,
                                                         traits,
                                                         public,
-                                                        associateds,
-                                                        bridges,
                                                         info,
                                                     });
                                                 }
@@ -2520,7 +2495,7 @@ impl<'a> AstMacroExpandsion<'a> {
                                         takes: takes.clone(),
                                         globals: vec![],
                                         macro_def: vec![],
-                                        custom_tys: vec![],
+                                        custom_tys: custom_tys,
                                         traits: vec![],
                                         workers: vec![],
                                         funcs: vec![],
@@ -2623,58 +2598,50 @@ impl<'a> AstMacroExpandsion<'a> {
                                     }
 
                                     // Types
-                                    for custm in &top_custom_tys {
-                                        let top =
-                                            self.for_cust_type(custm.clone(), &mut arm_global);
+                                    // for custm in &top_custom_tys {
+                                    //     let top =
+                                    //         self.for_cust_type(custm.clone(), &mut arm_global);
 
-                                        match top {
-                                            TopLevel::EnumDecl {
-                                                ident,
-                                                generic_types,
-                                                vals,
-                                                traits,
-                                                public,
-                                                associateds,
-                                                bridges,
-                                                info,
-                                            } => {
-                                                arm_block.custom_tys.push(CustomLevel::EnumDecl {
-                                                    ident,
-                                                    generic_types,
-                                                    vals,
-                                                    traits,
-                                                    public,
-                                                    associateds,
-                                                    bridges,
-                                                    info,
-                                                });
-                                            }
-                                            TopLevel::StructDecl {
-                                                ident,
-                                                generic_types,
-                                                vals,
-                                                traits,
-                                                public,
-                                                associateds,
-                                                bridges,
-                                                info,
-                                            } => {
-                                                arm_block.custom_tys.push(
-                                                    CustomLevel::StructDecl {
-                                                        ident,
-                                                        generic_types,
-                                                        vals,
-                                                        traits,
-                                                        public,
-                                                        associateds,
-                                                        bridges,
-                                                        info,
-                                                    },
-                                                );
-                                            }
-                                            _ => (),
-                                        }
-                                    }
+                                    //     match top {
+                                    //         TopLevel::EnumDecl {
+                                    //             ident,
+                                    //             generic_types,
+                                    //             vals,
+                                    //             traits,
+                                    //             public,
+                                    //             info,
+                                    //         } => {
+                                    //             arm_block.custom_tys.push(CustomLevel::EnumDecl {
+                                    //                 ident,
+                                    //                 generic_types,
+                                    //                 vals,
+                                    //                 traits,
+                                    //                 public,
+                                    //                 info,
+                                    //             });
+                                    //         }
+                                    //         TopLevel::StructDecl {
+                                    //             ident,
+                                    //             generic_types,
+                                    //             vals,
+                                    //             traits,
+                                    //             public,
+                                    //             info,
+                                    //         } => {
+                                    //             arm_block.custom_tys.push(
+                                    //                 CustomLevel::StructDecl {
+                                    //                     ident,
+                                    //                     generic_types,
+                                    //                     vals,
+                                    //                     traits,
+                                    //                     public,
+                                    //                     info,
+                                    //                 },
+                                    //             );
+                                    //         }
+                                    //         _ => (),
+                                    //     }
+                                    // }
 
                                     for sta in &top_static {
                                         let top =
@@ -2826,86 +2793,23 @@ impl<'a> AstMacroExpandsion<'a> {
         }
     }
 
-    fn for_cust_type(
+    fn for_methods(
         &mut self,
-        custom_ty: TopLevel,
+        meths: HashMap<String, Vec<CustTyAss>>,
         global: &mut HashMap<String, TopLevel>,
-    ) -> TopLevel {
-        match custom_ty.clone() {
-            TopLevel::EnumDecl {
-                ident,
-                generic_types,
-                vals,
-                traits,
-                public,
-                associateds,
-                bridges,
-                info,
-            } => {
-                let mut new_methods = Vec::new();
-                for each in associateds.clone() {
-                    match each {
-                        CustTyAss::Method(meth) => {
-                            match meth {
-                                Method {
-                                    worker_usage,
-                                    meth_self,
-                                    // inher_val,
-                                    // is_mut,
-                                    expect,
-                                    ret_state,
-                                    ident,
-                                    generics,
-                                    is_public,
-                                    is_extern,
-                                    par,
-                                    block,
-                                    info,
-                                } => {
-                                    if is_extern.is_none() {
-                                        if block.is_some() {
-                                            let new_block =
-                                                self.solve_for_expr(block.clone().unwrap(), global);
-
-                                            new_methods.push(CustTyAss::Method(Method {
-                                                worker_usage,
-                                                meth_self,
-                                                // inher_val,
-                                                // is_mut,
-                                                expect,
-                                                ret_state,
-                                                ident,
-                                                generics,
-                                                is_public,
-                                                is_extern,
-                                                par,
-                                                block: Some(new_block),
-                                                info,
-                                            }));
-                                        } else {
-                                            new_methods.push(CustTyAss::Method(Method {
-                                                worker_usage,
-                                                meth_self,
-                                                // inher_val,
-                                                // is_mut,
-                                                expect,
-                                                ret_state,
-                                                ident,
-                                                generics,
-                                                is_public,
-                                                is_extern,
-                                                par,
-                                                block,
-                                                info,
-                                            }));
-                                        }
-                                    } // else: leave it
-                                }
-                            }
-                        }
-                        CustTyAss::AssFunction(func) => match func {
-                            AssFunc {
+    ) -> HashMap<String, Vec<CustTyAss>> {
+        let mut new_methods = HashMap::new();
+        for ty_meths in &meths {
+            let mut curr_meths = vec![];
+            for each in ty_meths.1 {
+                match each {
+                    CustTyAss::Method(meth) => {
+                        match meth.clone() {
+                            Method {
                                 worker_usage,
+                                meth_self,
+                                // inher_val,
+                                // is_mut,
                                 expect,
                                 ret_state,
                                 ident,
@@ -2920,9 +2824,11 @@ impl<'a> AstMacroExpandsion<'a> {
                                     if block.is_some() {
                                         let new_block =
                                             self.solve_for_expr(block.clone().unwrap(), global);
-
-                                        new_methods.push(CustTyAss::AssFunction(AssFunc {
+                                        curr_meths.push(CustTyAss::Method(Method {
                                             worker_usage,
+                                            meth_self,
+                                            // inher_val,
+                                            // is_mut,
                                             expect,
                                             ret_state,
                                             ident,
@@ -2934,8 +2840,11 @@ impl<'a> AstMacroExpandsion<'a> {
                                             info,
                                         }));
                                     } else {
-                                        new_methods.push(CustTyAss::AssFunction(AssFunc {
+                                        curr_meths.push(CustTyAss::Method(Method {
                                             worker_usage,
+                                            meth_self,
+                                            // inher_val,
+                                            // is_mut,
                                             expect,
                                             ret_state,
                                             ident,
@@ -2947,171 +2856,94 @@ impl<'a> AstMacroExpandsion<'a> {
                                             info,
                                         }));
                                     }
-                                }
+                                } // else: leave it
                             }
-                        },
+                        }
                     }
-                }
-
-                let mut new_bridges = vec![];
-
-                for bridge in bridges {
-                    match bridge {
-                        BridgeDecl {
-                            ass_state,
-                            ass_type,
-                            ass_ident,
-                            new_ty,
-                            public,
+                    CustTyAss::AssFunction(func) => match func.clone() {
+                        AssFunc {
+                            worker_usage,
+                            expect,
+                            ret_state,
+                            ident,
+                            generics,
+                            is_public,
+                            is_extern,
+                            par,
                             block,
                             info,
                         } => {
-                            let new_block = self.solve_for_expr(block, global);
-
-                            new_bridges.push(BridgeDecl {
-                                ass_state,
-                                ass_type,
-                                ass_ident,
-                                new_ty,
-                                public,
-                                block: new_block,
-                                // methods: new_methods,
-                                info,
-                            });
-                        }
-                    }
-                }
-
-                TopLevel::EnumDecl {
-                    ident,
-                    generic_types,
-                    vals,
-                    traits,
-                    public,
-                    associateds: new_methods,
-                    bridges: new_bridges,
-                    info,
-                }
-            }
-            TopLevel::StructDecl {
-                ident,
-                generic_types,
-                vals,
-                traits,
-                public,
-                associateds,
-                bridges,
-                info,
-            } => {
-                let mut new_methods = Vec::new();
-
-                for each in associateds.clone() {
-                    match each {
-                        CustTyAss::Method(meth) => {
-                            match meth {
-                                Method {
-                                    worker_usage,
-                                    meth_self,
-                                    // inher_val,
-                                    // is_mut,
-                                    expect,
-                                    ret_state,
-                                    ident,
-                                    generics,
-                                    is_public,
-                                    is_extern,
-                                    par,
-                                    block,
-                                    info,
-                                } => {
-                                    if is_extern.is_none() {
-                                        if block.is_some() {
-                                            let new_block =
-                                                self.solve_for_expr(block.clone().unwrap(), global);
-
-                                            new_methods.push(CustTyAss::Method(Method {
-                                                worker_usage,
-                                                meth_self,
-                                                // inher_val,
-                                                // is_mut,
-                                                expect,
-                                                ret_state,
-                                                ident,
-                                                generics,
-                                                is_public,
-                                                is_extern,
-                                                par,
-                                                block: Some(new_block),
-                                                info,
-                                            }));
-                                        } else {
-                                            new_methods.push(CustTyAss::Method(Method {
-                                                worker_usage,
-                                                meth_self,
-                                                // inher_val,
-                                                // is_mut,
-                                                expect,
-                                                ret_state,
-                                                ident,
-                                                generics,
-                                                is_public,
-                                                is_extern,
-                                                par,
-                                                block,
-                                                info,
-                                            }));
-                                        }
-                                    } // else: leave it
+                            if is_extern.is_none() {
+                                if block.is_some() {
+                                    let new_block =
+                                        self.solve_for_expr(block.clone().unwrap(), global);
+                                    curr_meths.push(CustTyAss::AssFunction(AssFunc {
+                                        worker_usage,
+                                        expect,
+                                        ret_state,
+                                        ident,
+                                        generics,
+                                        is_public,
+                                        is_extern,
+                                        par,
+                                        block: Some(new_block),
+                                        info,
+                                    }));
+                                } else {
+                                    curr_meths.push(CustTyAss::AssFunction(AssFunc {
+                                        worker_usage,
+                                        expect,
+                                        ret_state,
+                                        ident,
+                                        generics,
+                                        is_public,
+                                        is_extern,
+                                        par,
+                                        block,
+                                        info,
+                                    }));
                                 }
                             }
                         }
-                        CustTyAss::AssFunction(_func) => {
-                            todo!("todo")
-                        }
-                    }
-                }
-
-                let mut new_bridges = vec![];
-
-                for bridge in bridges {
-                    match bridge {
-                        BridgeDecl {
-                            ass_state,
-                            ass_type,
-                            ass_ident,
-                            new_ty,
-                            public,
-                            block,
-                            info,
-                        } => {
-                            let new_block = self.solve_for_expr(block, global);
-
-                            new_bridges.push(BridgeDecl {
-                                ass_state,
-                                ass_type,
-                                ass_ident,
-                                new_ty,
-                                public,
-                                block: new_block,
-                                // methods: new_methods,
-                                info,
-                            });
-                        }
-                    }
-                }
-
-                TopLevel::StructDecl {
-                    ident,
-                    generic_types,
-                    vals,
-                    traits,
-                    public,
-                    associateds: new_methods,
-                    bridges: new_bridges,
-                    info,
+                    },
                 }
             }
-            _ => custom_ty,
+            new_methods.insert(ty_meths.0.clone(), curr_meths);
+        }
+
+        new_methods
+    }
+
+    fn for_bridges(
+        &mut self,
+        bridges: HashMap<String, Vec<BridgeDecl>>,
+        global: &mut HashMap<String, TopLevel>,
+    ) {
+        let mut new_bridges = vec![];
+        for bridge in bridges {
+            match bridge {
+                BridgeDecl {
+                    ass_state,
+                    ass_type,
+                    ass_ident,
+                    new_ty,
+                    public,
+                    block,
+                    info,
+                } => {
+                    let new_block = self.solve_for_expr(block, global);
+                    new_bridges.push(BridgeDecl {
+                        ass_state,
+                        ass_type,
+                        ass_ident,
+                        new_ty,
+                        public,
+                        block: new_block,
+                        // methods: new_methods,
+                        info,
+                    });
+                }
+            }
         }
     }
 
@@ -3406,7 +3238,6 @@ impl<'a> AstMacroExpandsion<'a> {
                         },
                     );
                 }
-                NameSpace::Plural { name: _, files: _ } => {}
                 NameSpace::Lib { name, .. } => {
                     // return the same
                     ret.insert(name.clone(), this_mod.clone());

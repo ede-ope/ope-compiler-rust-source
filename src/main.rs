@@ -10,7 +10,7 @@ mod cfg_builder;
 mod cfg_resourses;
 mod codegen;
 mod dp_expert;
-mod macro_expand;
+// mod macro_expand;
 mod move_checker;
 mod name_resolver;
 mod parser;
@@ -42,6 +42,7 @@ pub struct ComdInfo {
     pub filename: String,
     pub target: String,
     pub win: bool,
+    pub no_dgd: bool,
     pub make: Option<BuildType>,
     pub name: Option<String>,
 }
@@ -106,6 +107,7 @@ fn main() {
             let mut àfojúsùn = env!("BUILD_HOST").to_string();
             
             let mut fèrèsé = false;
+            let mut málo_dgd = false;
             let mut ṣe: Option<BuildType> = None;
             let mut p: Option<String> = None;
 
@@ -181,6 +183,10 @@ fn main() {
                             i += 1;
                             fèrèsé = true;
                         }
+                        "--málo-dgd" => {
+                            i += 1;
+                            málo_dgd = true;
+                        }
                         "--p" => {
                             i += 1;
                             if flags.len() >= i + 1 {
@@ -208,6 +214,7 @@ fn main() {
                 filename,
                 target: àfojúsùn,
                 win: fèrèsé,
+                no_dgd: málo_dgd,
                 make: ṣe,
                 name: p,
             };

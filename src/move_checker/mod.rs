@@ -1,20 +1,21 @@
 use crate::{
     compiler::SemanticError,
-    parser::{BlockLevel, DataState, Ident, TopLevel, TypeHint, TypeSpec},
+    parser::{BlockLevel, DataState, Ident, TypeHint, TypeSpec},
     scanner::Span,
-    analyser::{Analyser, Element},
+    analyser::Analyser,
+    name_resolver::ElemSignature
 };
 
 pub fn check_ty_copy_impl(ty: &TypeSpec, analyser: &mut Analyser) -> bool {
     match ty {
         TypeSpec { hint, span: _ } => match hint {
-            TypeHint::Custom { import, ident, generics: _ } => {
-                let cust = analyser.get_custom_type(import, ident, &vec![]);
+            TypeHint::Custom { import: _, ident, generics: _ } => {
+                let cust = analyser.get_custom_type(ident, &vec![]);
 
                 if cust.is_some() {
                     //
                     match cust.clone().unwrap() {
-                        TopLevel::StructDecl {
+                        ElemSignature::StructDecl {
                             ident: _,
                             generic_types: _,
                             vals: _,
@@ -22,9 +23,9 @@ pub fn check_ty_copy_impl(ty: &TypeSpec, analyser: &mut Analyser) -> bool {
                             public: _,
                             associateds: _,
                             bridges: _,
-                            info: _,
+                            span: _,
                         }
-                        | TopLevel::EnumDecl {
+                        | ElemSignature::EnumDecl {
                             ident: _,
                             generic_types: _,
                             vals: _,
@@ -32,7 +33,7 @@ pub fn check_ty_copy_impl(ty: &TypeSpec, analyser: &mut Analyser) -> bool {
                             public: _,
                             associateds: _,
                             bridges: _,
-                            info: _,
+                            span: _,
                         } => {
                             let mut ret = false;
                             for tr in &traits {

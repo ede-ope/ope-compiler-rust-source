@@ -659,11 +659,9 @@ impl<'a> KkWriter<'a> {
                 takes: _,
                 traits: _,
                 workers: _,
+                macro_defs: _,
                 statics: _,
                 custom_tys: _,
-                methods: _,
-                static_meths: _,
-                bridges: _,
                 main_fn: _,
                 funcs,
             } => {

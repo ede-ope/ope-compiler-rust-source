@@ -1,23 +1,271 @@
-fn main() {
-    // Tell Cargo where to find the .lib file
-    // "." means current directory (project root)
-    // println!("cargo:rustc-link-search=native=.");
+Commented out every macro implementation, to see if the language can work without it
+methods, traits and bridges now have their own independent field
+introduced trait implementation statement and a standalone method decalration statement
 
-    // Tell Cargo which lib to link
-    // Use the filename without the .lib extension
-    // println!("cargo:rustc-link-lib=static=LLVM-C");
+// We need to analyse statics first since functions might need it for Static -> func_call() expressions
+//Statics
+for stat in statics {
+    // let mut static_symbol_table = Vec::new();
+    // static_symbol_table.push(HashMap::new());
+    match stat {
+        TopLevel::StaticDef {
+            ident,
+            public: _,
+            block,
+            info: _,
+        } => match block.clone() {
+            CustomBlock {
+                takes,
+                globals,
+                macro_def,
+                custom_tys,
+                traits,
+                workers,
+                funcs,
+                platform_n_s: _,
+                static_defs: _,
+            } => {
+                let static_mod_name = ident.ident.clone() + &"--static";
+                let mut top_macros = vec![];
+                let mut top_fns = vec![];
+                let mut top_takes = vec![];
+                let mut top_globals = vec![];
+                let mut top_traits = vec![];
+                let mut top_workers = vec![];
+                let mut top_customs = vec![];
 
-    // LLVM requires these Windows system libraries
-    // println!("cargo:rustc-link-lib=shell32");
-    // println!("cargo:rustc-link-lib=ole32");
-    // println!("cargo:rustc-link-lib=uuid");
-    // println!("cargo:rustc-link-lib=advapi32");
+                {
+                    for mac in macro_def {
+                        match mac {
+                            CustomLevel::MacroDef {
+                                ident,
+                                is_public,
+                                cases,
+                                info,
+                            } => {
+                                top_macros.push(TopLevel::MacroDef {
+                                    ident,
+                                    is_public,
+                                    cases,
+                                    info,
+                                });
+                            }
+                            _ => (),
+                        }
+                    }
 
-    // println!(r"cargo:rustc-link-search=native=C:\Program Files\LLVM\lib");
-    
-    // // if LLVM-C.lib is MSVC format, use dylib not static
-    // println!("cargo:rustc-link-lib=dylib=LLVM-C");
-    
-    // // also add the bin dir so the .dll is found at runtime
-    // println!(r"cargo:rustc-link-search=native=C:\Program Files\LLVM\bin");
+                    for func in funcs {
+                        match func {
+                            CustomLevel::FuncDecl {
+                                is_async,
+                                expect,
+                                ret_state,
+                                ident,
+                                generics,
+                                is_public,
+                                is_visible: _,
+                                is_extern,
+                                par,
+                                worker_usage,
+                                block,
+                                info,
+                            } => {
+                                top_fns.push(TopLevel::FuncDecl {
+                                    is_async,
+                                    expect,
+                                    ret_state,
+                                    ident,
+                                    generics,
+                                    is_visible: false,
+                                    is_public,
+                                    is_extern,
+                                    par,
+                                    worker_usage,
+                                    block,
+                                    info,
+                                });
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    for tk in takes {
+                        match tk {
+                            CustomLevel::TakeStmt {
+                                take,
+                                from,
+                                lib,
+                                info,
+                            } => {
+                                top_takes.push(TopLevel::TakeStmt {
+                                    take,
+                                    from,
+                                    lib,
+                                    info,
+                                });
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    for glo in globals {
+                        match glo {
+                            CustomLevel::GlobalDecl {
+                                interpret,
+                                state,
+                                ty,
+                                name,
+                                value,
+                                public,
+                                info,
+                            } => {
+                                top_globals.push(TopLevel::GlobalDecl {
+                                    interpret,
+                                    state,
+                                    ty,
+                                    name,
+                                    value,
+                                    public,
+                                    info,
+                                });
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    for tr in traits {
+                        match tr {
+                            CustomLevel::TraitDef {
+                                ident,
+                                generic_types,
+                                interprets,
+                                methods,
+                                is_public,
+                                info,
+                            } => {
+                                top_traits.push(TopLevel::TraitDef {
+                                    ident,
+                                    generic_types,
+                                    interprets,
+                                    methods,
+                                    is_public,
+                                    info,
+                                });
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    for wk in workers {
+                        match wk {
+                            CustomLevel::WorkerDef {
+                                ident,
+                                func_name,
+                                public,
+                                block,
+                                info,
+                            } => {
+                                top_workers.push(TopLevel::WorkerDef {
+                                    ident,
+                                    func_name,
+                                    public,
+                                    block,
+                                    info,
+                                });
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    for cus in custom_tys {
+                        match cus {
+                            CustomLevel::EnumDecl {
+                                ident,
+                                generic_types,
+                                vals,
+                                traits,
+                                public,
+                                associateds,
+                                bridges,
+                                info,
+                            } => {
+                                top_customs.push(TopLevel::EnumDecl {
+                                    ident,
+                                    generic_types,
+                                    vals,
+                                    traits,
+                                    public,
+                                    associateds,
+                                    bridges,
+                                    info,
+                                });
+                            }
+                            CustomLevel::StructDecl {
+                                ident,
+                                generic_types,
+                                vals,
+                                traits,
+                                public,
+                                associateds,
+                                bridges,
+                                info,
+                            } => {
+                                top_customs.push(TopLevel::StructDecl {
+                                    ident,
+                                    generic_types,
+                                    vals,
+                                    traits,
+                                    public,
+                                    associateds,
+                                    bridges,
+                                    info,
+                                });
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+
+                let mut static_mod = Mod {
+                    mod_docs: None,
+                    main_fn: None,
+                    macro_defs: top_macros,
+                    fns: top_fns,
+                    platform_n_s: vec![],
+                    takes: top_takes,
+                    globals: top_globals,
+                    traits: top_traits,
+                    workers: top_workers,
+                    statics: vec![],
+                    custom_tys: top_customs,
+                    lines: vec![],
+                    scope: 0,
+                };
+
+                self.unit.insert(
+                    static_mod_name.clone(),
+                    NameSpace::Singular {
+                        name: static_mod_name.clone(),
+                        file: static_mod.clone(),
+                    },
+                );
+                // Initialise
+                let current_symbol_table = self.symbol_table.clone();
+                self.symbol_table = vec![];
+                self.symbol_table.push(HashMap::new());
+                name_resolver::register_mod_level_elems(self, &mut static_mod);
+                // Then analyse it...
+
+                // Globals
+                self.for_globals(&static_mod.globals);
+
+                // ...Functions
+                self.for_funcs(&static_mod.fns);
+
+                self.unit.remove(&static_mod_name);
+                self.symbol_table = current_symbol_table;
+            }
+        },
+        _ => (),
+    }
 }

@@ -7,20 +7,25 @@ use zip::ZipArchive;
 // use is_terminal::IsTerminal;as
 use std::collections::HashMap;
 use std::ffi::c_char;
+use std::fs::File;
 use std::io::{self, IsTerminal};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::{fs, vec};
 
+use crate::analyser::Analyser;
 use crate::borrow_checker::{self, ModCFG, Resource};
 use crate::codegen::Codegen;
 use crate::compiler::NameSpace::Singular;
-use crate::macro_expand::AstMacroExpandsion;
-use crate::parser::{Error, Ident, LibNextedLevel, Parser, TopLevel}; // Import the parser // StaticBlock, StaticLevel,
+use crate::parser::BridgeDecl;
+use crate::parser::CustTyAss;
+use crate::parser::TraitImpl;
+use crate::parser::TypeKey;
+// use crate::macro_expand::AstMacroExpandsion;
+use crate::parser::{Error, Ident, Parser, TopLevel}; // Import the parser // StaticBlock, StaticLevel,
 use crate::scanner::Pos;
 use crate::scanner::{LexedSelf, Span};
-use crate::analyser::Analyser;
 use crate::{dp_expert, llvm::*, BuildType, ComdInfo};
 
 #[derive(Debug, Clone)]
@@ -50,17 +55,24 @@ pub struct ASTs {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Mod {
+    pub mods: Vec<TopLevel>,
     pub mod_docs: Option<TopLevel>,
     pub main_fn: Option<TopLevel>,
-    pub macro_defs: Vec<TopLevel>,
+    pub panic_fn: Option<TopLevel>,
+    // pub macro_defs: Vec<TopLevel>,
     pub fns: Vec<TopLevel>,
-    pub platform_n_s: Vec<TopLevel>,
+    pub os_n_s: Vec<TopLevel>,
+    pub arch_n_s: Vec<TopLevel>,
     pub takes: Vec<TopLevel>,
     pub globals: Vec<TopLevel>,
     pub traits: Vec<TopLevel>,
     pub workers: Vec<TopLevel>,
     pub statics: Vec<TopLevel>,
     pub custom_tys: Vec<TopLevel>,
+
+    pub bridges: HashMap<String, Vec<BridgeDecl>>,
+    pub methods: HashMap<TypeKey, Vec<CustTyAss>>,
+    pub trait_impls: HashMap<TypeKey, Vec<TraitImpl>>,
     pub lines: Vec<String>,
     pub scope: usize,
 }
@@ -72,14 +84,16 @@ pub enum NameSpace {
         name: String,
         file: Mod,
     },
-    Plural {
+    SecEntry {
         name: String,
-        files: HashMap<String, Mod>,
+        singulars: Vec<String>,
+        file: Mod,
     },
     Lib {
         name: String,
         manifest: DkManifest,
         entry: ModCFG,
+        ackn_panic: bool, // the gba_fòyà keyword
         src: HashMap<String, ModCFG>,
     },
 }
@@ -130,7 +144,14 @@ pub struct SemanticError {
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct DkManifest {
-    package: Package,
+    pub package: Package,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[allow(dead_code)]
+pub enum PanicFn {
+    Owned, // then it must be in the primary entry module
+    Borrowed(String)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -141,7 +162,16 @@ pub struct Package {
     authors: String,
     license: String,
     entry: String,
+    pub panic_fn: PanicFn,
     dependencies: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+#[allow(dead_code)]
+pub enum FileKind {
+    PrimEntry,
+    SecEntry,
+    Simple,
 }
 
 pub fn handle_err(err: Vec<Error>, lines: HashMap<String, Vec<String>>) {
@@ -603,11 +633,9 @@ fn gen_from_mod_cfg(
             takes,
             traits: _,
             workers: _,
+            macro_defs: _,
             statics: _,
             custom_tys,
-            methods: _,
-            static_meths: _,
-            bridges: _,
             main_fn,
             funcs,
         } => {
@@ -670,6 +698,113 @@ fn gen_from_mod_cfg(
     }
 }
 
+/// This function takes in a dp file as File type, open it, decode, and add it to unit
+fn consume_dp(
+    lib: Ident,
+    file: File,
+    ackn_panic: bool,
+    unit: &mut HashMap<String, NameSpace>,
+    syntax_errs: &mut Vec<Error>,
+) {
+    let archive = ZipArchive::new(file);
+
+    match archive {
+        Ok(mut contents) => {
+            let mut manifest_str = String::new();
+            {
+                let mut get_manifest = contents.by_name(&"lib.toml");
+
+                if let Ok(manifest_file) = &mut get_manifest {
+                    let gotten = manifest_file.read_to_string(&mut manifest_str);
+
+                    if let Err(err) = gotten {
+                        panic!("Problem parsing {}: {}", lib.ident, err);
+                    }
+                } else {
+                    println!("Unable to read manifest of lib: {}", lib.ident);
+                }
+            }
+
+            let manifest_ret: Result<DkManifest, toml::de::Error> = toml::from_str(&manifest_str);
+
+            let manifest;
+            if let Ok(m) = manifest_ret {
+                manifest = m;
+            } else if let Err(err) = manifest_ret {
+                eprintln!("{}: {}", lib.ident, err);
+                manifest = DkManifest {
+                    package: Package {
+                        name: String::new(),
+                        authors: String::new(),
+                        version: String::new(),
+                        license: String::new(),
+                        entry: String::new(),
+                        panic_fn: PanicFn::Owned,
+                        dependencies: vec![],
+                    },
+                };
+            } else {
+                eprintln!("Manifest parsing error");
+                manifest = DkManifest {
+                    package: Package {
+                        name: String::new(),
+                        authors: String::new(),
+                        version: String::new(),
+                        license: String::new(),
+                        entry: String::new(),
+                        panic_fn: PanicFn::Owned,
+                        dependencies: vec![],
+                    },
+                };
+            }
+
+            let mut entry = ModCFG::new();
+            {
+                let mut get_entry = contents.by_name(&format!("{}.pk", manifest.package.entry));
+
+                if let Ok(entry_file) = &mut get_entry {
+                    let mut bytes = vec![];
+                    let gotten = entry_file.read_to_end(&mut bytes);
+
+                    if let Ok(_) = gotten {
+                        let mut pk_reader = dp_expert::KkReader::new(&bytes);
+
+                        entry = pk_reader.gen_mod();
+                    } else if let Err(err) = gotten {
+                        panic!("Problem reading {}.pk: {}", manifest.package.entry, err);
+                    } else {
+                        panic!("Problem parsing {}", lib.ident)
+                    }
+                } else {
+                    println!(
+                        "Unable to read lib {} entry module: {}.pk",
+                        lib.ident, manifest.package.entry
+                    );
+                }
+            }
+
+            let src = HashMap::new();
+
+            unit.insert(
+                lib.ident.clone(),
+                NameSpace::Lib {
+                    name: lib.ident,
+                    manifest,
+                    entry,
+                    ackn_panic,
+                    src,
+                },
+            );
+        }
+        Err(err) => {
+            syntax_errs.push(Error {
+                message: format!("{}", err),
+                span: lib.span,
+            });
+        }
+    }
+}
+
 pub fn compile_file(cli: ComdInfo) {
     let exe_dir = std::env::current_exe()
         .unwrap()
@@ -704,7 +839,7 @@ pub fn compile_file(cli: ComdInfo) {
 
     let lines = lex_result.lines;
 
-    let mut parser = Parser::new(tokens, name.clone(), true);
+    let mut parser = Parser::new(tokens, name.clone(), FileKind::PrimEntry);
 
     let result = parser.parse_program();
 
@@ -717,17 +852,24 @@ pub fn compile_file(cli: ComdInfo) {
         NameSpace::Singular {
             name: name.clone(),
             file: Mod {
+                mods: result.mods.clone(),
                 mod_docs: result.mod_docs,
                 main_fn: result.main_fn,
-                macro_defs: result.macro_def,
+                panic_fn: result.panic_fn,
+                // macro_defs: result.macro_def,
                 fns: result.funcs,
-                platform_n_s: result.platform_n_s,
+                os_n_s: result.os_n_s,
+                arch_n_s: result.arch_n_s,
                 takes: result.takes,
                 globals: result.globals,
                 traits: result.traits,
                 workers: result.workers,
                 statics: result.statics,
                 custom_tys: result.custom_tys,
+
+                methods: result.methods,
+                bridges: result.bridges,
+                trait_impls: result.trait_impls,
                 lines: lines.clone(),
                 scope: 0,
             },
@@ -741,118 +883,67 @@ pub fn compile_file(cli: ComdInfo) {
         }
     }
 
-    // ADD THE CORE MODULE
-    let ope_path = std::env::current_exe().unwrap();
-    let ope_dir = ope_path.parent().unwrap();
+    // ADD THE CORE LIB
+    // let ope_path = std::env::current_exe().unwrap();
+    // let ope_dir = ope_path.parent().unwrap();
 
-    let core_mod_path = ope_dir.join("gbùngbùn.ope");
-    // For every use
-    // let path_check = is_file(&core_mod_path);
-    // if let Ok(result) = path_check {
-    //     if result {
-    // if it's a file
-    let err_msg = format!(
-        "Failed to read source file {}\n",
-        core_mod_path.to_str().unwrap_or(&"unknown")
-    );
-    let core_mod_source = fs::read_to_string(&core_mod_path).expect(&err_msg);
+    // let core_mod_path = ope_dir.join("dgd.dp");
 
-    let mut core_mod_lex = LexedSelf::new(&core_mod_source, format!("<gbùngbùn>"));
-    let core_mod_lex_result = core_mod_lex.lex();
+    // let err_msg = format!(
+    //     "Failed to read source file {}\n",
+    //     core_mod_path.to_str().unwrap_or(&"unknown")
+    // );
 
-    if !core_mod_lex.errs.is_empty() {
-        for err in core_mod_lex.errs {
-            syntax_errs.push(err);
-        }
-    }
+    // let core_file = fs::File::open(core_mod_path).expect(&err_msg);
 
-    let core_mod_tokens = core_mod_lex_result.tokens;
-    // let _mod_line_spans = mod_lex_result.line_spans;
-    let core_mod_lines = core_mod_lex_result.lines;
-    lines_of_mods.insert(String::from("<gbùngbùn>"), core_mod_lines.clone());
-    let mut core_mod_parser = Parser::new(core_mod_tokens, format!("<gbùngbùn>"), false);
-    let core_mod_result = core_mod_parser.parse_program();
-
-    // we should check if the name does not match any of the existing ones
-    unit.insert(
-        String::from("<gbùngbùn>"),
-        Singular {
-            name: String::from("<gbùngbùn>"),
-            file: Mod {
-                mod_docs: core_mod_result.mod_docs,
-                main_fn: core_mod_result.main_fn,
-                macro_defs: core_mod_result.macro_def,
-                fns: core_mod_result.funcs,
-                platform_n_s: core_mod_result.platform_n_s,
-                takes: core_mod_result.takes,
-                globals: core_mod_result.globals,
-                traits: core_mod_result.traits,
-                workers: core_mod_result.workers,
-                statics: core_mod_result.statics,
-                custom_tys: core_mod_result.custom_tys,
-                lines: core_mod_lines.clone(),
-                scope: 0,
-            },
-        },
-    );
-
-    if !core_mod_result.errs.is_empty() {
-        for err in core_mod_result.errs.clone() {
-            syntax_errs.push(err);
-        }
-    }
+    // consume_dp(
+    //     Ident {
+    //         ident: format!("<dgd>"),
+    //         span: Span {
+    //             st: Pos { column: 0, line: 0 },
+    //             en: Pos { column: 0, line: 0 },
+    //             file: name.clone(),
+    //         },
+    //     },
+    //     core_file,
+    //     &mut unit,
+    //     &mut syntax_errs,
+    // );
 
     // FOR EACH MODULE, FOLDER AND LIBRARY
-    for m in result.mods {
+    let mut lib_list = vec![];
+    let mut mod_list = vec![];
+    for m in &result.mods {
         match m {
             TopLevel::UseStmt {
-                module,
-                nexted_level,
-                as_,
+                path,
+                is_sec_entry,
+                alias,
                 is_public: _,
                 info: _,
             } => {
+                mod_list.push(alias.ident.clone());
                 let mod_path;
-                let mod_ident; // without the .ope extention
-                match module.clone() {
+                // let mod_ident; // without the .ope extention
+                match path.clone() {
                     Ident { ident, span: _ } => {
                         mod_path = std::path::PathBuf::from(ident.clone())
                             .with_extension("ope")
                             .to_string_lossy()
                             .to_string();
 
-                        mod_ident = ident;
+                        // mod_ident = ident;
                     }
                 }
                 // For every use
-                let path_check = is_file(&mod_ident, module.span.clone(), &mut syntax_errs);
+                let path_check = is_file(&path.ident, path.span.clone(), &mut syntax_errs);
                 if let Ok(result) = path_check {
                     if result {
-                        // if it's a file
-                        let mut show_nexted_error = false;
-                        match nexted_level {
-                            LibNextedLevel::All => show_nexted_error = true,
-                            LibNextedLevel::To(n) => {
-                                if n > 0 {
-                                    show_nexted_error = true;
-                                }
-                            }
-                        }
-                        if show_nexted_error {
-                            syntax_errs.push(Error {
-                                message: format!(
-                                    "Warning: '{}' is a file path therefore the nexted level syntax(..) is useless here",
-                                    module.ident
-                                ),
-                                span: module.span.clone(),
-                            });
-                        }
-
                         if mod_path.to_lowercase().ends_with(".ope") {
                             let mod_source = fs::read_to_string(&mod_path)
                                 .expect("Failed to read source file\n");
 
-                            let mut mod_lex = LexedSelf::new(&mod_source, mod_ident.clone());
+                            let mut mod_lex = LexedSelf::new(&mod_source, alias.ident.clone());
                             let mod_lex_result = mod_lex.lex();
 
                             if !mod_lex.errs.is_empty() {
@@ -864,8 +955,16 @@ pub fn compile_file(cli: ComdInfo) {
                             let mod_tokens = mod_lex_result.tokens;
                             // let _mod_line_spans = mod_lex_result.line_spans;
                             let mod_lines = mod_lex_result.lines;
-                            lines_of_mods.insert(as_.clone(), mod_lines.clone());
-                            let mut mod_parser = Parser::new(mod_tokens, mod_ident, false);
+                            lines_of_mods.insert(alias.ident.clone(), mod_lines.clone());
+                            let mut mod_parser = Parser::new(
+                                mod_tokens,
+                                alias.ident.clone(),
+                                if *is_sec_entry {
+                                    FileKind::SecEntry
+                                } else {
+                                    FileKind::Simple
+                                }
+                            );
                             let mod_result = mod_parser.parse_program();
 
                             lines_of_mods.insert(mod_path.clone(), mod_lines.clone());
@@ -874,19 +973,27 @@ pub fn compile_file(cli: ComdInfo) {
                             unit.insert(
                                 mod_path.clone(),
                                 Singular {
-                                    name: as_.clone(),
+                                    name: alias.ident.clone(),
                                     file: Mod {
+                                        mods: mod_result.mods,
                                         mod_docs: mod_result.mod_docs,
                                         main_fn: mod_result.main_fn,
-                                        macro_defs: mod_result.macro_def,
+                                        panic_fn: mod_result.panic_fn,
+                                        // macro_defs: mod_result.macro_def,
                                         fns: mod_result.funcs,
-                                        platform_n_s: mod_result.platform_n_s,
+                                        os_n_s: mod_result.os_n_s,
+                                        arch_n_s: mod_result.arch_n_s,
                                         takes: mod_result.takes,
                                         globals: mod_result.globals,
                                         traits: mod_result.traits,
                                         workers: mod_result.workers,
                                         statics: mod_result.statics,
                                         custom_tys: mod_result.custom_tys,
+
+                                        methods: mod_result.methods,
+                                        bridges: mod_result.bridges,
+                                        trait_impls: mod_result.trait_impls,
+
                                         lines: mod_lines.clone(),
                                         scope: 0,
                                     },
@@ -902,29 +1009,32 @@ pub fn compile_file(cli: ComdInfo) {
                             // Error: Not a ope file
                             syntax_errs.push(Error {
                                 message: format!(
-                                    "The file {:#?} on line {} is not a .ope file",
-                                    module.ident.clone(),
-                                    module.span.st.line.clone()
+                                    "The file {} on line {} is not a .ope file",
+                                    path.ident.clone(),
+                                    path.span.st.line.clone()
                                 ),
-                                span: module.span,
+                                span: path.span.clone(),
                             });
                         }
                     } else {
                         // It's a folder then
-                        todo!("Using a folder")
+                        syntax_errs.push(Error {
+                            message: format!(
+                                "The file {} on line {} is not a file",
+                                path.ident.clone(),
+                                path.span.st.line.clone()
+                            ),
+                            span: path.span.clone(),
+                        });
                     }
                 }
             }
             TopLevel::UseLibStmt {
-                module: lib,
+                include: lib,
+                ackn_panic,
                 info: _,
             } => {
-                let lib_ident; // without the .ope extention
-                match lib.clone() {
-                    Ident { ident, span: _ } => {
-                        lib_ident = ident;
-                    }
-                }
+                lib_list.push(lib.ident.clone());
                 // first check if it's on the lib folder from ope directory
                 let mut dp_name = lib.ident.clone();
                 if !dp_name.to_lowercase().ends_with(".dp") {
@@ -934,114 +1044,17 @@ pub fn compile_file(cli: ComdInfo) {
                 let dp_file = fs::File::open(dp_path);
 
                 if let Ok(file) = dp_file {
-                    let archive = ZipArchive::new(file);
-
-                    match archive {
-                        Ok(mut contents) => {
-                            let mut manifest_str = String::new();
-                            {
-                                let mut get_manifest = contents.by_name(&"lib.toml");
-
-                                if let Ok(manifest_file) = &mut get_manifest {
-                                    let gotten = manifest_file.read_to_string(&mut manifest_str);
-
-                                    if let Err(err) = gotten {
-                                        panic!("Problem parsing {}: {}", lib.ident, err);
-                                    }
-                                } else {
-                                    println!("Unable to read manifest of lib: {}", lib.ident);
-                                }
-                            }
-
-                            let manifest_ret: Result<DkManifest, toml::de::Error> =
-                                toml::from_str(&manifest_str);
-
-                            let manifest;
-                            if let Ok(m) = manifest_ret {
-                                manifest = m;
-                            } else if let Err(err) = manifest_ret {
-                                eprintln!("{}: {}", lib.ident, err);
-                                manifest = DkManifest {
-                                    package: Package {
-                                        name: String::new(),
-                                        authors: String::new(),
-                                        version: String::new(),
-                                        license: String::new(),
-                                        entry: String::new(),
-                                        dependencies: vec![],
-                                    },
-                                };
-                            } else {
-                                eprintln!("Manifest parsing error");
-                                manifest = DkManifest {
-                                    package: Package {
-                                        name: String::new(),
-                                        authors: String::new(),
-                                        version: String::new(),
-                                        license: String::new(),
-                                        entry: String::new(),
-                                        dependencies: vec![],
-                                    },
-                                };
-                            }
-
-                            let mut entry = ModCFG::new();
-                            {
-                                let mut get_entry =
-                                    contents.by_name(&format!("{}.pk", manifest.package.entry));
-
-                                if let Ok(entry_file) = &mut get_entry {
-                                    let mut bytes = vec![];
-                                    let gotten = entry_file.read_to_end(&mut bytes);
-
-                                    if let Ok(_) = gotten {
-                                        let mut pk_reader = dp_expert::KkReader::new(&bytes);
-
-                                        entry = pk_reader.gen_mod();
-                                    } else if let Err(err) = gotten {
-                                        panic!(
-                                            "Problem reading {}.pk: {}",
-                                            manifest.package.entry, err
-                                        );
-                                    } else {
-                                        panic!("Problem parsing {}", lib.ident)
-                                    }
-                                } else {
-                                    println!(
-                                        "Unable to read lib {} entry module: {}.pk",
-                                        lib.ident, manifest.package.entry
-                                    );
-                                }
-                            }
-
-                            let src = HashMap::new();
-
-                            unit.insert(
-                                lib_ident.clone(),
-                                NameSpace::Lib {
-                                    name: lib_ident,
-                                    manifest,
-                                    entry,
-                                    src,
-                                },
-                            );
-                        }
-                        Err(err) => {
-                            syntax_errs.push(Error {
-                                message: format!("{}", err),
-                                span: lib.span,
-                            });
-                        }
-                    }
+                    consume_dp(lib.clone(), file, *ackn_panic, &mut unit, &mut syntax_errs);
                 } else if let Err(error) = dp_file {
                     // Before emiting error, we should check if the path is provided in command
                     syntax_errs.push(Error {
                         message: format!("{}", error),
-                        span: lib.span,
+                        span: lib.span.clone(),
                     });
                 } else {
-                    panic!("Shouldn't happen")
+                    panic!("Library {} not found", lib.ident);
                 }
+
             }
             _ => (),
         }
@@ -1049,12 +1062,12 @@ pub fn compile_file(cli: ComdInfo) {
 
     if syntax_errs.is_empty() {
         // SEMANTIC ANALYSES
-        let mut analyses = Analyser::new(name.clone(), unit);
+        let mut analyses = Analyser::new(name.clone(), cli.clone(), lib_list, mod_list, unit);
         // AST -> Free macro
-        let mut expand_macro = AstMacroExpandsion::new(&mut analyses);
-        let new_unit = expand_macro.solve_ast();
+        // let mut expand_macro = AstMacroExpandsion::new(&mut analyses);
+        // let new_unit = expand_macro.solve_ast();
 
-        analyses.unit = new_unit;
+        // analyses.unit = new_unit;
 
         analyses.analyse();
         // end of semantic analyses
@@ -1066,18 +1079,13 @@ pub fn compile_file(cli: ComdInfo) {
             let base_name = match &cli.name {
                 Some(n) => n.clone(),
                 None => name.clone(),
-                // std::path::PathBuf::from(&cli.filename)
-                //     .file_stem()
-                //     .unwrap_or_default()
-                //     .to_string_lossy()
-                //     .to_string(),
             };
             let cfg = borrow_checker::gen_unit_cfg(&mut analyses);
 
-            // CHECKING IF TARGET IS KUI PACKAGE
+            // CHECKING IF TARGET IS OPE PACKAGE
             let target = cli.target.clone();
             if target == String::from("odù-ọ̀pẹ") || target == String::from("odu-ope") {
-                println!("COMPILING KUI PACKAGE...");
+                println!("COMPILING Ọ̀PẸ PACKAGE...");
                 println!();
 
                 let mut version = String::new();
@@ -1125,7 +1133,6 @@ pub fn compile_file(cli: ComdInfo) {
                                     bin.gen_from_mod();
                                     let _ = zip.write_all(&bin.buf);
                                 }
-                                Resource::Folder(_) => {}
                                 Resource::Package { .. } => {
                                     // add it to lib.toml dependency section
                                     dependencies.push_str(&format!("\"{}\", ", each_resource.0));
@@ -1176,7 +1183,6 @@ pub fn compile_file(cli: ComdInfo) {
                             &cli,
                         );
                     }
-                    Resource::Folder(_) => todo!("fold@name/mod"),
                     Resource::Package { entry, src: _ } => {
                         gen_from_mod_cfg(
                             format!("lib@{}/entry", each_resource.0),

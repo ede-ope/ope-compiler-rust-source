@@ -1,32 +1,34 @@
 pub(crate) mod blocklevel_analyser;
 
+use crate::borrow_checker::MethodCfg;
 // use crate::borrow_checker::BorrowChecker;
-use crate::compiler::{ErrorHint, Mod, NameSpace, SemanticError};
-use crate::{name_resolver, type_checker};
+use crate::compiler::{ErrorHint, Mod, NameSpace, PanicFn, SemanticError};
+use crate::name_resolver::ElemSignature;
+use crate::{name_resolver, parser, type_checker, ComdInfo};
 // use crate::name_resolver::{self, *};
-use self::blocklevel_analyser::Expect;
+// use self::blocklevel_analyser::Expect;
 use crate::parser::{
     AssFunc, BlockLevel, BridgeDecl, CustTyAss, CustomBlock, CustomLevel, DataState, EnumVariants,
-    Expr, ExprKind, Generic, Ident, InterfaceParam, Method, ModPath, Platform, PlatformArm,
-    StmtInfo, TopLevel, TypeHint, TypeSpec,
+    Expr, ExprKind, Generic, Ident, InterfaceParam, Method, ModPath, Os, OsArm, StmtInfo, TopLevel,
+    TraitImpl, TypeHint, TypeKey, TypeSpec,
 };
 use crate::scanner::{FullTok, Pos, Span, Token};
 // use crate::type_checker::{self, *};
 use std::collections::{BTreeSet, HashMap};
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum Element {
-    Global(TopLevel),
-    Local(BlockLevel),
-}
+// #[derive(Debug, Clone)]
+// #[allow(dead_code)]
+// pub enum Element {
+//     Global(TopLevel),
+//     Local(BlockLevel),
+// }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub struct Variable {
     pub state: DataState,
     pub ty: TypeSpec,
-    pub value: Expr,
+    // pub value: Expr,
     pub is_mutable: Option<bool>, // global variables are None
     pub ident_span: Span,
 }
@@ -36,9 +38,15 @@ pub struct Variable {
 pub struct Analyser {
     pub unit: HashMap<String, NameSpace>,
     pub entry: String,
+    pub lib_list: Vec<String>,
+    pub mod_list: Vec<String>,
+    pub cli: ComdInfo,
     pub modl: String,
     pub cust_tys: HashMap<String, bool>,
-    pub symbol_table: Vec<HashMap<String, Element>>, //HashMap for each scope
+    pub symbol_tables: HashMap<String, Vec<HashMap<String, ElemSignature>>>,
+    //HashMap for each mod and the other for each scope
+    pub symbol_table: Vec<HashMap<String, ElemSignature>>,
+    pub panic_from: PanicFn,
     hir_index: usize,
     pub errs: Vec<SemanticError>,
 }
@@ -48,107 +56,89 @@ impl Analyser {
     //
     //
 
-    pub fn new(entry: String, unit: HashMap<String, NameSpace>) -> Self {
+    pub fn new(
+        entry: String,
+        cli: ComdInfo,
+        lib_list: Vec<String>,
+        mod_list: Vec<String>,
+        unit: HashMap<String, NameSpace>,
+    ) -> Self {
         // takes refrence because Hir does not mutate anymore(after the macro expansion)
         //
         Self {
             unit,
+            lib_list,
+            mod_list,
             entry,
+            cli,
             modl: String::new(),
             cust_tys: HashMap::new(),
-            symbol_table: Vec::new(),
+            symbol_tables: HashMap::new(),
+            symbol_table: vec![],
+            panic_from: PanicFn::Owned, // tmp
+
             hir_index: 0,
             errs: Vec::new(),
         }
     }
 
-    pub fn get_element(&mut self, ident: &Ident) -> Option<Element> {
+    pub fn get_element(&mut self, ident: &Ident) -> Option<ElemSignature> {
+        // from current module
         for scope in self.symbol_table.iter().rev() {
             let element = scope.get(&ident.ident);
-
-            if element.is_some() {
-                return Some(element.unwrap().clone());
+            match element {
+                Some(ElemSignature::TakeStmt { elem, .. }) => {
+                    return Some(*elem.clone());
+                }
+                Some(elem) => {
+                    return Some(elem.clone());
+                }
+                _ => (),
             }
         }
+
         return None; // by default
     }
 
     pub fn get_custom_type(
         &mut self,
-        import: &Option<(Option<Ident>, ModPath)>,
         ident: &Ident,
+        access: &Vec<Ident>,
         genrs: &Vec<Generic>,
-    ) -> Option<TopLevel> {
+    ) -> Option<ElemSignature> {
         let mut ret = None;
 
-        let element;
-        if import.is_some() {
-            let import = import.clone().unwrap();
-            element = Some(Element::Global(TopLevel::TakeStmt {
-                take: (
-                    FullTok {
-                        kind: Token::Identifier(ident.ident.clone()),
-                        span: ident.span.clone(),
-                    },
-                    None,
-                ),
-                from: import.1.clone(),
-                lib: import.0,
-                info: StmtInfo {
-                    span: ident.span.clone(),
-                    docs: vec![],
-                },
-            }));
-        } else {
-            element = self.get_element(ident);
-        }
+        let element = self.get_element(ident);
 
         if element.is_some() {
             let ty = element.unwrap();
-
-            match ty {
-                Element::Global(toplevel) => match toplevel {
-                    TopLevel::EnumDecl {
+            if access.len() == 0 {
+                match ty {
+                    ElemSignature::EnumDecl {
                         ident: _,
                         generic_types: _,
                         vals: _,
                         traits: _,
                         public: _,
-                        associateds: _,
-                        bridges: _,
-                        info: _,
-                    } => ret = Some(toplevel),
-                    TopLevel::StructDecl {
+                        span: _,
+                    } => ret = Some(ty),
+                    ElemSignature::StructDecl {
                         ident: _,
                         generic_types: _,
                         vals: _,
                         traits: _,
                         public: _,
-                        associateds: _,
-                        bridges: _,
-                        info: _,
-                    } => ret = Some(toplevel),
-                    TopLevel::TakeStmt {
-                        take,
-                        from,
-                        lib,
-                        info: _,
-                    } => {
-                        ret = self.get_custom_from_take(take, from, lib);
+                        span: _,
+                    } => ret = Some(ty),
+                    _ => (), // get_element method does not return a take stm raw
+                }
+            } else {
+                match ty {
+                    ElemSignature::ProjectLevel => {
+                        ret = Some(ty);
                     }
-                    _ => (),
-                },
-                Element::Local(block_level) => match block_level {
-                    BlockLevel::TakeStmt {
-                        take,
-                        from,
-                        lib,
-                        info: _,
-                    } => {
-                        ret = self.get_custom_from_take(take, from, lib);
-                    }
-                    _ => (),
-                },
+                    _ => (), // get_element method does not return a take stm raw
+                }
             }
         } else {
             for genr in genrs {
@@ -156,7 +146,7 @@ impl Analyser {
                     Generic { name, traits } => {
                         if ident.ident == name.ident {
                             // Found
-                            ret = Some(TopLevel::GenericType {
+                            ret = Some(ElemSignature::GenericType {
                                 name: name.clone(),
                                 traits: traits.clone(),
                             });
@@ -204,8 +194,6 @@ impl Analyser {
                                 vals: _,
                                 traits: _,
                                 public,
-                                associateds: _,
-                                bridges: _,
                                 info: _,
                             } => {
                                 match take.0.clone().kind {
@@ -227,8 +215,6 @@ impl Analyser {
                                 vals: _,
                                 traits: _,
                                 public,
-                                associateds: _,
-                                bridges: _,
                                 info: _,
                             } => {
                                 match take.0.clone().kind {
@@ -248,7 +234,6 @@ impl Analyser {
                         }
                     }
                 }
-                NameSpace::Plural { name: _, files: _ } => {}
                 NameSpace::Lib { .. } => {}
             }
         }
@@ -292,8 +277,6 @@ impl Analyser {
                                 vals: _,
                                 traits: _,
                                 public,
-                                associateds: _,
-                                bridges: _,
                                 info: _,
                             } => {
                                 match take.0.clone().kind {
@@ -315,8 +298,6 @@ impl Analyser {
                                 vals: _,
                                 traits: _,
                                 public,
-                                associateds: _,
-                                bridges: _,
                                 info: _,
                             } => {
                                 match take.0.clone().kind {
@@ -350,7 +331,6 @@ impl Analyser {
                         }
                     }
                 }
-                NameSpace::Plural { name: _, files: _ } => {}
                 NameSpace::Lib { .. } => {}
             }
         }
@@ -408,7 +388,6 @@ impl Analyser {
                         }
                     }
                 }
-                NameSpace::Plural { name: _, files: _ } => {}
                 NameSpace::Lib { .. } => {}
             }
         }
@@ -416,8 +395,8 @@ impl Analyser {
         ret
     }
 
-    pub fn get_var(&mut self, ident: &Ident) -> Option<(Variable, bool)> {
-        let mut from_latest_scope = true;
+    pub fn get_var(&mut self, ident: &Ident) -> Option<Variable> {
+        // let mut from_latest_scope = true;
 
         // for scope in self.symbol_table.iter().rev() {
         //     let element = scope.get(ident);
@@ -427,212 +406,246 @@ impl Analyser {
         //     from_latest_scope = false;
         // }
 
-        for scope in self.symbol_table.iter().rev() {
-            let element = scope.get(&ident.ident);
-            if element.is_some() {
-                match element.unwrap().clone() {
-                    Element::Global(elem) => match elem {
-                        TopLevel::GlobalDecl {
-                            interpret: _,
-                            state,
-                            ty,
-                            name,
-                            value,
-                            public: _,
-                            info: _,
-                        } => {
-                            return Some((
-                                Variable {
-                                    state,
-                                    ty,
-                                    value,
-                                    is_mutable: None,
-                                    ident_span: name.span,
-                                },
-                                from_latest_scope,
-                            ));
-                        }
-                        TopLevel::TakeStmt {
-                            take,
-                            from,
-                            lib,
-                            info: _,
-                        } => {
-                            match &from {
-                                ModPath::Ident(mod_ident) => {
-                                    let module = self.unit.get(&mod_ident.ident);
-                                    if module.is_some() {
-                                        let module = module.unwrap();
-                                        match module {
-                                            NameSpace::Singular { name: _, file } => {
-                                                if lib == None {
-                                                    for g in &file.globals {
-                                                        match g {
-                                                            TopLevel::GlobalDecl {
-                                                                interpret: _,
-                                                                state,
-                                                                ty,
-                                                                name,
-                                                                value,
-                                                                public,
-                                                                info: _,
-                                                            } => {
-                                                                match take.0.clone().kind {
-                                                                    Token::Identifier(s) => {
-                                                                        if s == name.ident {
-                                                                            // found it
-                                                                            if public.clone() {
-                                                                                return Some((
-                                                                                    Variable {
-                                                                                        state: state
-                                                                                            .clone(),
-                                                                                        ty: ty.clone(),
-                                                                                        value: value
-                                                                                            .clone(),
-                                                                                        is_mutable: None,
-                                                                                        ident_span: name
-                                                                                            .span
-                                                                                            .clone(),
-                                                                                    },
-                                                                                    from_latest_scope,
-                                                                                ));
-                                                                            } else {
-                                                                                self.errs.push(SemanticError {
-                                                                                    messages: vec![format!(
-                                                                                        "'{}', is not public",
-                                                                                        name.ident
-                                                                                    )],
-                                                                                    hints: vec![],
-                                                                                    span: name.span.clone(),
-                                                                                });
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    _ => (),
-                                                                }
-                                                            }
-                                                            _ => (),
-                                                        }
-                                                    }
-                                                } else {
-                                                }
-                                            }
-                                            NameSpace::Plural { name: _, files: _ } => {}
-                                            NameSpace::Lib { .. } => {}
-                                        }
-                                    } else {
-                                        self.errs.push(SemanticError {
-                                            messages: vec![format!(
-                                                "Can't find module '{:?}'",
-                                                from
-                                            )],
-                                            hints: vec![],
-                                            span: mod_ident.span.clone(),
-                                        }); // for now
-                                    }
-                                }
-                                ModPath::Str(_) => {
-                                    todo!("todo");
-                                }
-                                ModPath::UnExpected => {
-                                    //
-                                    panic!("Ewe")
-                                }
-                                ModPath::FromLibFolder(_, _) => {
-                                    panic!("Take from lib folder")
-                                }
-                            }
-                        }
-                        _ => (),
-                    },
-                    Element::Local(elem) => match elem {
-                        BlockLevel::VarDecl {
-                            interpret: _,
-                            state,
-                            ty,
-                            name,
-                            value,
-                            mutable,
-                            info: _,
-                        } => {
-                            return Some((
-                                Variable {
-                                    state,
-                                    ty,
-                                    value,
-                                    is_mutable: Some(mutable.clone()),
-                                    ident_span: name.span,
-                                },
-                                from_latest_scope,
-                            ));
-                        }
-                        BlockLevel::UnInitVarDecl {
-                            state,
-                            ty,
-                            name,
-                            mutable,
-                            info,
-                        } => {
-                            return Some((
-                                Variable {
-                                    state,
-                                    ty,
-                                    value: Expr {
-                                        kind: ExprKind::Undefined,
-                                        span: info.span,
-                                    },
-                                    is_mutable: Some(mutable.clone()),
-                                    ident_span: name.span,
-                                },
-                                from_latest_scope,
-                            ));
-                        }
-                        BlockLevel::Param {
-                            state,
-                            ty,
-                            name,
-                            mutable,
-                            info: _,
-                        } => {
-                            match state {
-                                DataState::ImutRef | DataState::MutRef => {
-                                    return Some((
-                                        Variable {
-                                            state,
-                                            ty,
-                                            value: Expr {
-                                                kind: ExprKind::Foo,
-                                                span: name.span.clone(),
-                                            },
-                                            is_mutable: Some(mutable),
-                                            ident_span: name.span,
-                                        },
-                                        false, // which is why the block can throw(return) it
-                                    ));
-                                }
-                                _ => {
-                                    return Some((
-                                        Variable {
-                                            state,
-                                            ty,
-                                            value: Expr {
-                                                kind: ExprKind::Foo,
-                                                span: name.span.clone(),
-                                            },
-                                            is_mutable: Some(mutable),
-                                            ident_span: name.span,
-                                        },
-                                        true, // which is why the block cannot throw(return) it
-                                    ));
-                                }
-                            }
-                        }
-                        _ => (),
-                    },
+        // for scope in self.symbol_table.iter().rev() {
+        //     let element = scope.get(&ident.ident);
+        //     if element.is_some() {
+        //         match element.unwrap().clone() {
+        //             Element::Global(elem) => match elem {
+        //                 TopLevel::GlobalDecl {
+        //                     interpret: _,
+        //                     state,
+        //                     ty,
+        //                     name,
+        //                     value,
+        //                     public: _,
+        //                     info: _,
+        //                 } => {
+        //                     return Some((
+        //                         Variable {
+        //                             state,
+        //                             ty,
+        //                             value,
+        //                             is_mutable: None,
+        //                             ident_span: name.span,
+        //                         },
+        //                         from_latest_scope,
+        //                     ));
+        //                 }
+        //                 TopLevel::TakeStmt {
+        //                     take,
+        //                     from,
+        //                     lib,
+        //                     info: _,
+        //                 } => {
+        //                     match &from {
+        //                         ModPath::Ident(mod_ident) => {
+        //                             let module = self.unit.get(&mod_ident.ident);
+        //                             if module.is_some() {
+        //                                 let module = module.unwrap();
+        //                                 match module {
+        //                                     NameSpace::Singular { name: _, file } => {
+        //                                         if lib == None {
+        //                                             for g in &file.globals {
+        //                                                 match g {
+        //                                                     TopLevel::GlobalDecl {
+        //                                                         interpret: _,
+        //                                                         state,
+        //                                                         ty,
+        //                                                         name,
+        //                                                         value,
+        //                                                         public,
+        //                                                         info: _,
+        //                                                     } => {
+        //                                                         match take.0.clone().kind {
+        //                                                             Token::Identifier(s) => {
+        //                                                                 if s == name.ident {
+        //                                                                     // found it
+        //                                                                     if public.clone() {
+        //                                                                         return Some((
+        //                                                                             Variable {
+        //                                                                                 state: state
+        //                                                                                     .clone(),
+        //                                                                                 ty: ty.clone(),
+        //                                                                                 value: value
+        //                                                                                     .clone(),
+        //                                                                                 is_mutable: None,
+        //                                                                                 ident_span: name
+        //                                                                                     .span
+        //                                                                                     .clone(),
+        //                                                                             },
+        //                                                                             from_latest_scope,
+        //                                                                         ));
+        //                                                                     } else {
+        //                                                                         self.errs.push(SemanticError {
+        //                                                                             messages: vec![format!(
+        //                                                                                 "'{}', is not public",
+        //                                                                                 name.ident
+        //                                                                             )],
+        //                                                                             hints: vec![],
+        //                                                                             span: name.span.clone(),
+        //                                                                         });
+        //                                                                     }
+        //                                                                 }
+        //                                                             }
+        //                                                             _ => (),
+        //                                                         }
+        //                                                     }
+        //                                                     _ => (),
+        //                                                 }
+        //                                             }
+        //                                         } else {
+        //                                         }
+        //                                     }
+        //                                     NameSpace::Plural { name: _, files: _ } => {}
+        //                                     NameSpace::Lib { .. } => {}
+        //                                 }
+        //                             } else {
+        //                                 self.errs.push(SemanticError {
+        //                                     messages: vec![format!(
+        //                                         "Can't find module '{:?}'",
+        //                                         from
+        //                                     )],
+        //                                     hints: vec![],
+        //                                     span: mod_ident.span.clone(),
+        //                                 }); // for now
+        //                             }
+        //                         }
+        //                         ModPath::Str(_) => {
+        //                             todo!("todo");
+        //                         }
+        //                         ModPath::UnExpected => {
+        //                             //
+        //                             panic!("Ewe")
+        //                         }
+        //                         ModPath::FromLibFolder(_, _) => {
+        //                             panic!("Take from lib folder")
+        //                         }
+        //                     }
+        //                 }
+        //                 _ => (),
+        //             },
+        //             Element::Local(elem) => match elem {
+        //                 BlockLevel::VarDecl {
+        //                     interpret: _,
+        //                     state,
+        //                     ty,
+        //                     name,
+        //                     value,
+        //                     mutable,
+        //                     info: _,
+        //                 } => {
+        //                     return Some((
+        //                         Variable {
+        //                             state,
+        //                             ty,
+        //                             value,
+        //                             is_mutable: Some(mutable.clone()),
+        //                             ident_span: name.span,
+        //                         },
+        //                         from_latest_scope,
+        //                     ));
+        //                 }
+        //                 BlockLevel::UnInitVarDecl {
+        //                     state,
+        //                     ty,
+        //                     name,
+        //                     mutable,
+        //                     info,
+        //                 } => {
+        //                     return Some((
+        //                         Variable {
+        //                             state,
+        //                             ty,
+        //                             value: Expr {
+        //                                 kind: ExprKind::Undefined,
+        //                                 span: info.span,
+        //                             },
+        //                             is_mutable: Some(mutable.clone()),
+        //                             ident_span: name.span,
+        //                         },
+        //                         from_latest_scope,
+        //                     ));
+        //                 }
+        //                 BlockLevel::Param {
+        //                     state,
+        //                     ty,
+        //                     name,
+        //                     mutable,
+        //                     info: _,
+        //                 } => {
+        //                     match state {
+        //                         DataState::ImutRef | DataState::MutRef => {
+        //                             return Some((
+        //                                 Variable {
+        //                                     state,
+        //                                     ty,
+        //                                     value: Expr {
+        //                                         kind: ExprKind::Foo,
+        //                                         span: name.span.clone(),
+        //                                     },
+        //                                     is_mutable: Some(mutable),
+        //                                     ident_span: name.span,
+        //                                 },
+        //                                 false, // which is why the block can throw(return) it
+        //                             ));
+        //                         }
+        //                         _ => {
+        //                             return Some((
+        //                                 Variable {
+        //                                     state,
+        //                                     ty,
+        //                                     value: Expr {
+        //                                         kind: ExprKind::Foo,
+        //                                         span: name.span.clone(),
+        //                                     },
+        //                                     is_mutable: Some(mutable),
+        //                                     ident_span: name.span,
+        //                                 },
+        //                                 true, // which is why the block cannot throw(return) it
+        //                             ));
+        //                         }
+        //                     }
+        //                 }
+        //                 _ => (),
+        //             },
+        //         }
+        //     }
+        //     from_latest_scope = false;
+        //     // i += 1;
+        // }
+
+        let elem = self.get_element(ident);
+
+        if elem.is_some() {
+            let elem = elem.unwrap();
+
+            match elem {
+                ElemSignature::GlobalDecl {
+                    state, ty, name, ..
+                } => {
+                    return Some(Variable {
+                        state,
+                        ty,
+                        is_mutable: None,
+                        ident_span: name.span.clone(),
+                    });
                 }
+                ElemSignature::VarDecl {
+                    state,
+                    ty,
+                    name,
+                    mutable,
+                    ..
+                } => {
+                    return Some(Variable {
+                        state,
+                        ty,
+                        is_mutable: Some(mutable),
+                        ident_span: name.span.clone(),
+                    });
+                }
+                _ => (),
             }
-            from_latest_scope = false;
-            // i += 1;
         }
 
         return None; // by default
@@ -740,132 +753,82 @@ impl Analyser {
         }
     }
 
-    fn for_platform(&mut self, platforms: &[TopLevel]) {
+    fn for_os_target(&mut self, platforms: &[TopLevel]) {
         for plat in platforms {
             match plat {
-                TopLevel::PlatformNS { arms, info } => {
-                    // get the kind of platform spec it is
-                    let mut kind = Platform::Os;
-                    if arms.len() > 0 {
-                        match &arms[0].target.kind {
-                            ExprKind::ElemNamespaceAccess { ident, access: _ } => {
-                                if ident.is_none() {
-                                    self.errs.push(SemanticError {
-                                        messages: vec![
-                                            format!(
-                                                "The type of the first arm most be specified to the determine the type of other arms",
-                                            ),
-                                        ],
-                                        hints: vec![],
-                                        span: arms[0].target.span.clone(),
-                                    });
-                                } else {
-                                    let ident = ident.as_ref().unwrap();
-                                    if ident.ident == format!("IrúẸ̀rọ") {
-                                        kind = Platform::Arch;
-                                    } else if ident.ident == format!("KM") {
-                                    } else {
-                                        self.errs.push(SemanticError {
-                                            messages: vec![
-                                                format!(
-                                                    "Unexpected type. A platform type is expected",
-                                                ),
-                                                format!(
-                                                    "There are two platform types: KM and IrúẸ̀rọ"
-                                                ),
-                                            ],
-                                            hints: vec![],
-                                            span: arms[0].target.span.clone(),
-                                        });
-                                    }
-                                }
-                            }
-                            _ => {
-                                self.errs.push(SemanticError {
-                                    messages: vec![
-                                        format!("Unexpected type. A platform type is expected",),
-                                        format!("There are two platform types: KM and IrúẸ̀rọ"),
-                                    ],
-                                    hints: vec![],
-                                    span: arms[0].target.span.clone(),
-                                });
-                            }
-                        }
-                    }
-
+                TopLevel::OsTarget { arms, info } => {
                     let mut to_outside = vec![];
                     let mut to_outside_funcs = vec![];
                     let mut satisfied_variants = vec![];
+
+                    let original_symbol_table = self.symbol_table.clone();
                     for arm in arms {
                         let mut arm_to_outside = vec![];
                         let mut arm_to_outside_funcs = vec![];
                         let target_expr;
                         match arm {
-                            PlatformArm {
+                            OsArm {
                                 target,
                                 block,
                                 span: _,
                             } => {
-                                let zero_span = Span {
-                                    st: Pos { column: 0, line: 0 },
-                                    en: Pos { column: 0, line: 0 },
-                                    file: self.modl.clone(),
-                                };
+                                // let zero_span = Span {
+                                //     st: Pos { column: 0, line: 0 },
+                                //     en: Pos { column: 0, line: 0 },
+                                //     file: self.modl.clone(),
+                                // };
 
                                 // check the pattern based on the kind expected
-                                if target.kind != ExprKind::Default {
-                                    // if the targrt kind is not default
-                                    if kind == Platform::Os {
-                                        blocklevel_analyser::check_for_val_compatibility(
-                                            target.clone(),
-                                            &Expect::Required(
-                                                TypeSpec {
-                                                    hint: TypeHint::Custom {
-                                                        import: None,
-                                                        ident: Ident {
-                                                            ident: String::from("KM"),
-                                                            span: zero_span.clone(),
-                                                        },
-                                                        generics: vec![],
-                                                    },
-                                                    span: zero_span,
-                                                },
-                                                DataState::Owner,
-                                            ),
-                                            &vec![],
-                                            &vec![],
-                                            self,
-                                        );
-                                    } else {
-                                        // Platform::Arch
-                                        blocklevel_analyser::check_for_val_compatibility(
-                                            target.clone(),
-                                            &Expect::Required(
-                                                TypeSpec {
-                                                    hint: TypeHint::Custom {
-                                                        import: None,
-                                                        ident: Ident {
-                                                            ident: String::from("IrúẸ̀rọ"),
-                                                            span: zero_span.clone(),
-                                                        },
-                                                        generics: vec![],
-                                                    },
-                                                    span: zero_span,
-                                                },
-                                                DataState::Owner,
-                                            ),
-                                            &vec![],
-                                            &vec![],
-                                            self,
-                                        );
-                                    }
-                                }
+                                // if let Os::Others(_) = target {
+                                // } else {
+                                // blocklevel_analyser::check_for_val_compatibility(
+                                //     target.clone(),
+                                //     &Expect::Required(
+                                //         TypeSpec {
+                                //             hint: TypeHint::Custom {
+                                //                 get: None,
+                                //                 access: Ident {
+                                //                     ident: String::from("KM"),
+                                //                     span: zero_span.clone(),
+                                //                 },
+                                //                 generics: vec![],
+                                //             },
+                                //             span: zero_span,
+                                //         },
+                                //         DataState::Owner,
+                                //     ),
+                                //     &vec![],
+                                //     &vec![],
+                                //     self,
+                                // );
+                                // Platform::Arch
+                                // blocklevel_analyser::check_for_val_compatibility(
+                                //     target.clone(),
+                                //     &Expect::Required(
+                                //         TypeSpec {
+                                //             hint: TypeHint::Custom {
+                                //                 import: None,
+                                //                 ident: Ident {
+                                //                     ident: String::from("IrúẸ̀rọ"),
+                                //                     span: zero_span.clone(),
+                                //                 },
+                                //                 generics: vec![],
+                                //             },
+                                //             span: zero_span,
+                                //         },
+                                //         DataState::Owner,
+                                //     ),
+                                //     &vec![],
+                                //     &vec![],
+                                //     self,
+                                // );
+                                // }
                                 // analyse the block
                                 match block.clone() {
                                     CustomBlock {
                                         takes,
                                         globals,
-                                        macro_def,
+                                        // macro_def,
                                         custom_tys,
                                         traits,
                                         workers,
@@ -874,7 +837,7 @@ impl Analyser {
                                         platform_n_s: _,
                                     } => {
                                         let platform_mod_name = format!("--platform%{}", self.modl);
-                                        let mut top_macros = vec![];
+                                        // let mut top_macros = vec![];
                                         let mut top_fns = vec![];
                                         let mut top_takes = vec![];
                                         let mut top_globals = vec![];
@@ -882,26 +845,31 @@ impl Analyser {
                                         let mut top_workers = vec![];
                                         let mut top_customs = vec![];
                                         let mut top_static = vec![];
+                                        let top_methods;
+                                        let top_bridges;
+                                        let top_trait_impls;
 
                                         {
-                                            for mac in macro_def {
-                                                match mac {
-                                                    CustomLevel::MacroDef {
-                                                        ident,
-                                                        is_public,
-                                                        cases,
-                                                        info,
-                                                    } => {
-                                                        top_macros.push(TopLevel::MacroDef {
-                                                            ident,
-                                                            is_public,
-                                                            cases,
-                                                            info,
-                                                        });
-                                                    }
-                                                    _ => (),
-                                                }
-                                            }
+                                            // 1. we need to add every element in arm first
+
+                                            // for mac in macro_def {
+                                            //     match mac {
+                                            //         CustomLevel::MacroDef {
+                                            //             ident,
+                                            //             is_public,
+                                            //             cases,
+                                            //             info,
+                                            //         } => {
+                                            //             top_macros.push(TopLevel::MacroDef {
+                                            //                 ident,
+                                            //                 is_public,
+                                            //                 cases,
+                                            //                 info,
+                                            //             });
+                                            //         }
+                                            //         _ => (),
+                                            //     }
+                                            // }
 
                                             for func in funcs {
                                                 match func {
@@ -987,7 +955,7 @@ impl Analyser {
                                                     CustomLevel::TraitDef {
                                                         ident,
                                                         generic_types,
-                                                        interprets,
+                                                        // interprets,
                                                         methods,
                                                         is_public,
                                                         info,
@@ -995,7 +963,7 @@ impl Analyser {
                                                         top_traits.push(TopLevel::TraitDef {
                                                             ident,
                                                             generic_types,
-                                                            interprets,
+                                                            // interprets,
                                                             methods,
                                                             is_public,
                                                             info,
@@ -1053,8 +1021,6 @@ impl Analyser {
                                                         vals,
                                                         traits,
                                                         public,
-                                                        associateds,
-                                                        bridges,
                                                         info,
                                                     } => {
                                                         top_customs.push(TopLevel::EnumDecl {
@@ -1063,8 +1029,6 @@ impl Analyser {
                                                             vals,
                                                             traits,
                                                             public,
-                                                            associateds,
-                                                            bridges,
                                                             info,
                                                         });
                                                     }
@@ -1074,8 +1038,6 @@ impl Analyser {
                                                         vals,
                                                         traits,
                                                         public,
-                                                        associateds,
-                                                        bridges,
                                                         info,
                                                     } => {
                                                         top_customs.push(TopLevel::StructDecl {
@@ -1084,46 +1046,81 @@ impl Analyser {
                                                             vals,
                                                             traits,
                                                             public,
-                                                            associateds,
-                                                            bridges,
                                                             info,
                                                         });
                                                     }
                                                     _ => (),
                                                 }
                                             }
+
+                                            // // 2. then the elements of the current module it self for proper analyses
+                                            let modl = self.unit.get(&self.modl);
+
+                                            if modl.is_some() {
+                                                let modl = modl.unwrap();
+                                                match modl {
+                                                    NameSpace::Singular { name: _, file } => {
+                                                        match file {
+                                                            Mod {
+                                                                mod_docs: _,
+                                                                main_fn: _,
+                                                                // macro_defs,
+                                                                fns: _,
+                                                                os_n_s: _,
+                                                                arch_n_s: _,
+                                                                takes: _,
+                                                                globals: _,
+                                                                traits: _,
+                                                                workers: _,
+                                                                statics: _,
+                                                                custom_tys: _,
+                                                                methods,
+                                                                bridges,
+                                                                trait_impls,
+                                                                lines: _,
+                                                                scope: _,
+                                                            } => {
+                                                                top_methods = methods.clone();
+                                                                top_bridges = bridges.clone();
+                                                                top_trait_impls =
+                                                                    trait_impls.clone();
+                                                            }
+                                                        }
+                                                    }
+                                                    _ => panic!("Should be Singular"),
+                                                }
+                                            } else {
+                                                todo!("module not found error")
+                                            }
                                         }
 
-                                        let mut platform_mod = Mod {
+                                        let platform_mod = Mod {
                                             mod_docs: None,
                                             main_fn: None,
-                                            macro_defs: top_macros,
+                                            // macro_defs: top_macros,
                                             fns: top_fns,
-                                            platform_n_s: vec![],
+                                            os_n_s: vec![],
+                                            arch_n_s: vec![],
                                             takes: top_takes,
                                             globals: top_globals,
                                             traits: top_traits,
                                             workers: top_workers,
                                             statics: vec![],
                                             custom_tys: top_customs,
+                                            methods: top_methods,
+                                            bridges: top_bridges,
+                                            trait_impls: top_trait_impls,
                                             lines: vec![],
                                             scope: 0,
                                         };
 
-                                        self.unit.insert(
-                                            platform_mod_name.clone(),
-                                            NameSpace::Singular {
-                                                name: platform_mod_name.clone(),
-                                                file: platform_mod.clone(),
-                                            },
-                                        );
                                         // Initialise
-                                        let current_symbol_table = self.symbol_table.clone();
-                                        self.symbol_table = vec![];
-                                        self.symbol_table.push(HashMap::new());
-                                        name_resolver::register_mod_level_elems(
+                                        // add the elems in current arm to the the original table
+                                        // this will override the current meths, bridges and trait_impls in self
+                                        name_resolver::register_mod(
+                                            &platform_mod_name,
+                                            &platform_mod,
                                             self,
-                                            &mut platform_mod,
                                         );
                                         // Then analyse it...
 
@@ -1149,9 +1146,6 @@ impl Analyser {
 
                                         // Custom types
                                         self.for_custom_types(&platform_mod.custom_tys);
-
-                                        self.unit.remove(&platform_mod_name);
-                                        self.symbol_table = current_symbol_table;
                                     }
                                 }
 
@@ -1165,21 +1159,25 @@ impl Analyser {
 
                     self.does_all_arms_have_the_same_outside_func(to_outside);
 
-                    if self.check_platform_exhaustiveness(kind.clone(), arms, info.span.clone()) {
+                    if self.check_os_arm_exhaustiveness(arms, info.span.clone()) {
                         // if every arm has the same outside functions
                         // we need to check if the signature matches
                         self.check_outside_func_signatures(to_outside_funcs);
                     }
+                    self.symbol_table = original_symbol_table;
+                }
+                TopLevel::ArchTarget { arms: _, info: _ } => {
+                    todo!("Arch target")
                 }
                 _ => (),
             }
         }
     }
 
-    fn check_platform_exhaustiveness(
+    fn check_os_arm_exhaustiveness(
         &mut self,
-        kind: Platform,
-        arms: &Vec<PlatformArm>,
+        // kind: Platform,
+        arms: &Vec<OsArm>,
         plat_header_span: Span,
     ) -> bool {
         let mut is_exhausted = true;
@@ -1187,7 +1185,7 @@ impl Analyser {
         let mut seen: HashMap<String, Span> = HashMap::new();
         let mut default_seen: Option<Span> = None;
 
-        for PlatformArm {
+        for OsArm {
             target, span: _, ..
         } in arms
         {
@@ -1202,29 +1200,33 @@ impl Analyser {
                         ],
                         span: default_span.clone(),
                     }],
-                    span: target.span.clone(),
+                    span: self.get_os_span(target),
                 });
                 is_exhausted = false;
                 continue;
             }
 
-            if target.kind == ExprKind::Default {
-                default_seen = Some(target.span.clone());
-                continue;
+            match target {
+                Os::Others(s) => {
+                    default_seen = Some(s.clone());
+                    continue;
+                }
+                _ => (),
             }
 
             let Some(variant_name) = self.extract_variant_name(target) else {
                 continue; // malformed pattern — presumably reported elsewhere
             };
 
-            if let Some(prev_span) = seen.insert(variant_name.to_string(), target.span.clone()) {
+            if let Some(prev_span) = seen.insert(variant_name.to_string(), self.get_os_span(target))
+            {
                 self.errs.push(SemanticError {
                     messages: vec![format!("Duplicate arm for `{}`", variant_name)],
                     hints: vec![ErrorHint {
                         hints: vec!["already matched here".into()],
                         span: prev_span,
                     }],
-                    span: target.span.clone(),
+                    span: self.get_os_span(target),
                 });
                 is_exhausted = false;
             }
@@ -1232,75 +1234,51 @@ impl Analyser {
 
         // Exhaustiveness only matters if there's no default arm to catch the rest.
         if default_seen.is_none() {
-            let zero_span = Span {
-                st: Pos { column: 0, line: 0 },
-                en: Pos { column: 0, line: 0 },
-                file: format!(""),
-            };
-            let type_ident = match kind {
-                Platform::Os => Ident {
-                    ident: "KM".into(),
-                    span: zero_span,
-                },
-                Platform::Arch => Ident {
-                    ident: "IrúẸ̀rọ".into(),
-                    span: zero_span,
-                },
-            };
-
-            if let Some(TopLevel::EnumDecl { vals, .. }) =
-                self.get_custom_type(&None, &type_ident, &vec![])
-            {
-                let mut name_of_missing_variants = String::new();
-                let mut emit_error = false;
-                let mut i = 0;
-                for variant in &vals {
-                    let name = self.variant_name(variant);
-                    if !seen.contains_key(&name) {
-                        emit_error = true;
-                        if i == 0 {
-                            name_of_missing_variants = name;
-                        } else {
-                            name_of_missing_variants =
-                                name_of_missing_variants + &", " + name.as_ref();
-                        }
-                        i += 1;
+            let vals = vec![
+                format!("Linux"),
+                format!("Darwin"),
+                format!("Windows"),
+                format!("Others"),
+                format!("Undefined"),
+            ];
+            let mut name_of_missing_variants = String::new();
+            let mut emit_error = false;
+            let mut i = 0;
+            for name in &vals {
+                // let name = self.variant_name(variant);
+                if !seen.contains_key(name) {
+                    emit_error = true;
+                    if i == 0 {
+                        name_of_missing_variants = name.clone();
+                    } else {
+                        name_of_missing_variants = name_of_missing_variants + &", " + name.as_ref();
                     }
+                    i += 1;
                 }
+            }
 
-                if emit_error {
-                    self.errs.push(SemanticError {
-                        messages: vec![format!(
-                            "Not all variants are covered — missing {} (and no default `àrọ́sí` arm)",
-                            name_of_missing_variants
-                        )],
-                        hints: vec![],
-                        span: plat_header_span.clone(),
-                    });
-                    is_exhausted = false;
-                }
+            if emit_error {
+                self.errs.push(SemanticError {
+                    messages: vec![format!(
+                        "Not all variants are covered — missing {} (and no default `àrọ́sí` arm)",
+                        name_of_missing_variants
+                    )],
+                    hints: vec![],
+                    span: plat_header_span.clone(),
+                });
+                is_exhausted = false;
             }
         }
 
         is_exhausted
     }
 
-    fn extract_variant_name(&self, target: &Expr) -> Option<String> {
-        match &target.kind {
-            ExprKind::ElemNamespaceAccess { access, .. } => {
-                // `access` is the part after `::` — could be a simple variant
-                // (KM::Windows), a tuple variant call (KM::Foo(1, 2)), or a
-                // record variant (KM::Foo { x: 1 }). Pull the name out of
-                // whichever shape it actually is.
-                match &access.kind {
-                    ExprKind::Ident { ident, .. } => Some(ident.ident.clone()),
-                    ExprKind::ArgBuffer { name, .. } => Some(name.ident.clone()),
-                    ExprKind::StructVal {
-                        ident: Some(ident), ..
-                    } => Some(ident.ident.clone()),
-                    _ => None,
-                }
-            }
+    fn extract_variant_name(&self, target: &Os) -> Option<String> {
+        match target {
+            Os::Windows(_) => Some(format!("Windows")),
+            Os::Linux(_) => Some(format!("Linux")),
+            Os::Darwin(_) => Some(format!("Darwin")),
+            Os::Others(_) => Some(format!("Others")),
             _ => None,
         }
     }
@@ -1313,7 +1291,21 @@ impl Analyser {
         }
     }
 
-    fn does_all_arms_have_the_same_outside_func(&mut self, to_outside: Vec<(Expr, Vec<Ident>)>) {
+    fn get_os_span(&self, os: &Os) -> Span {
+        match os.clone() {
+            Os::Linux(span) => span,
+            Os::Darwin(s) => s,
+            Os::Windows(s) => s,
+            Os::Others(s) => s,
+            Os::Undefined => Span {
+                st: Pos { column: 0, line: 0 },
+                en: Pos { column: 0, line: 0 },
+                file: self.modl.clone(),
+            },
+        }
+    }
+
+    fn does_all_arms_have_the_same_outside_func(&mut self, to_outside: Vec<(Os, Vec<Ident>)>) {
         if to_outside.len() <= 1 {
             return;
         }
@@ -1353,11 +1345,11 @@ impl Analyser {
 
                 self.errs.push(SemanticError {
                     messages: vec![format!(
-                        "Function {} is missing on arm {}",
-                        name, arm_expr.kind
+                        "Function {} is missing on arm {:?}",
+                        name, arm_expr
                     )],
                     hints: hint.into_iter().collect(),
-                    span: arm_expr.span.clone(),
+                    span: self.get_os_span(arm_expr),
                 });
             }
         }
@@ -1456,22 +1448,147 @@ impl Analyser {
         }
     }
 
-    fn analyse_cust_ty_association(
-        &mut self,
-        ty_ident: &Ident,
-        association: &Vec<CustTyAss>,
-        traits: &Vec<Ident>,
-        bridges: &Vec<BridgeDecl>,
-    ) {
+    fn get_methods(&mut self, key: &TypeKey) -> Option<HashMap<String, CustTyAss>> {
+        let meths = self.get_element(&Ident {
+            ident: format!("<methods>"),
+            span: Span {
+                st: Pos { column: 0, line: 0 },
+                en: Pos { column: 0, line: 0 },
+                file: self.modl.clone(),
+            },
+        });
+
+        if meths.is_some() {
+            match meths.unwrap() {
+                ElemSignature::Methods(all) => {
+                    let ret = all.get(key);
+
+                    if ret.is_some() {
+                        Some(ret.unwrap().clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => panic!("uncalled for"),
+            }
+        } else {
+            todo!("methods not found error")
+        }
+    }
+
+    fn get_bridges(&mut self, key: &String) -> Option<HashMap<TypeKey, BridgeDecl>> {
+        let brgs = self.get_element(&Ident {
+            ident: format!("<bridges>"),
+            span: Span {
+                st: Pos { column: 0, line: 0 },
+                en: Pos { column: 0, line: 0 },
+                file: self.modl.clone(),
+            },
+        });
+
+        if brgs.is_some() {
+            match brgs.unwrap() {
+                ElemSignature::Bridges(all) => {
+                    let ret = all.get(key);
+
+                    if ret.is_some() {
+                        Some(ret.unwrap().clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => panic!("uncalled for"),
+            }
+        } else {
+            todo!("methods not found error")
+        }
+    }
+
+    fn get_impls(&mut self, key: &TypeKey) -> Option<HashMap<String, TraitImpl>> {
+        let brgs = self.get_element(&Ident {
+            ident: format!("<impls>"),
+            span: Span {
+                st: Pos { column: 0, line: 0 },
+                en: Pos { column: 0, line: 0 },
+                file: self.modl.clone(),
+            },
+        });
+
+        if brgs.is_some() {
+            match brgs.unwrap() {
+                ElemSignature::TraitImpls(all) => {
+                    let ret = all.get(key);
+
+                    if ret.is_some() {
+                        Some(ret.unwrap().clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => panic!("uncalled for"),
+            }
+        } else {
+            todo!("methods not found error")
+        }
+    }
+
+    fn analyse_cust_ty_bridges(&mut self, ty_ident: &Ident) {
+        let bridges = self.get_bridges(&ty_ident.ident);
+
+        if bridges.is_some() {
+            let bridges = bridges.unwrap();
+            for bridge in bridges.clone() {
+                match bridge.1.clone() {
+                    BridgeDecl {
+                        ass_state,
+                        ass_type,
+                        ass_ident,
+                        new_ty,
+                        public: _,
+                        block,
+                        info: _,
+                    } => {
+                        blocklevel_analyser::check_for_val_compatibility(
+                            block,
+                            &blocklevel_analyser::Expect::Required(
+                                TypeSpec {
+                                    hint: TypeHint::Custom {
+                                        get: new_ty.clone(),
+                                        access: vec![],
+                                        generics: vec![],
+                                    },
+                                    span: new_ty.span,
+                                },
+                                DataState::Owner,
+                            ),
+                            &vec![],
+                            &vec![InterfaceParam {
+                                ident: ass_ident.clone(),
+                                state: ass_state,
+                                ty: ass_type,
+                                is_mut: false,
+                                span: ass_ident.span,
+                            }],
+                            self,
+                        );
+                    }
+                }
+            }
+        } else {
+            todo!("Type has no bridges error!")
+        }
+    }
+
+    fn analyse_cust_ty_association(&mut self, association: &HashMap<String, CustTyAss>) {
         let mut enum_meths = HashMap::new();
         // enum_meths are the methods of the enums in hashmap for easy access
         let mut cust_func = Vec::new();
 
-        for ass in association {
+        for ass in association.clone() {
             // here we are to analyse each method before adding them to enum_meths hashmap
-            match &ass {
+            match ass.1 {
                 CustTyAss::Method(meth) => {
-                    match meth {
+                    match &meth {
                         Method {
                             worker_usage: _,
                             meth_self: _,
@@ -1523,16 +1640,16 @@ impl Analyser {
                                 }
                             } else {
                                 self.errs.push(SemanticError {
-                                    messages: vec![
-                                        format!(
-                                            "Method {} is missing it's expression",
-                                            ident.ident.clone()
-                                        ),
-                                        format!("For custom types, method defination with no expression binding is obsolite")
-                                    ],
-                                    hints: vec![],
-                                    span: ident.span.clone(),
-                                });
+                                        messages: vec![
+                                            format!(
+                                                "Method {} is missing it's expression",
+                                                ident.ident.clone()
+                                            ),
+                                            format!("For custom types, method defination with no expression binding is obsolite")
+                                        ],
+                                        hints: vec![],
+                                        span: ident.span.clone(),
+                                    });
                             }
 
                             if enum_meths.contains_key(&ident.ident) {
@@ -1593,19 +1710,19 @@ impl Analyser {
                                 }
                             } else {
                                 self.errs.push(SemanticError {
-                                    messages: vec![
-                                        format!(
-                                            "Method {} is missing it's expression",
-                                            ident.ident.clone()
-                                        ),
-                                        format!("For custom types, method defination with no expression binding is obsolite")
-                                    ],
-                                    hints: vec![],
-                                    span: ident.span.clone(),
-                                });
+                                        messages: vec![
+                                            format!(
+                                                "Method {} is missing it's expression",
+                                                ident.ident.clone()
+                                            ),
+                                            format!("For custom types, method defination with no expression binding is obsolite")
+                                        ],
+                                        hints: vec![],
+                                        span: ident.span.clone(),
+                                    });
                             }
 
-                            if cust_func.contains(ident) {
+                            if cust_func.contains(&ident) {
                                 self.errs.push(SemanticError {
                                     messages: vec![format!(
                                         "A Static function with identifier {} already existed",
@@ -1622,46 +1739,24 @@ impl Analyser {
                 }
             }
         }
+    }
 
-        for bridge in bridges {
-            match bridge.clone() {
-                BridgeDecl {
-                    ass_state,
-                    ass_type,
-                    ass_ident,
-                    new_ty,
-                    public: _,
-                    block,
-                    info: _,
-                } => {
-                    blocklevel_analyser::check_for_val_compatibility(
-                        block,
-                        &blocklevel_analyser::Expect::Required(
-                            TypeSpec {
-                                hint: TypeHint::Custom {
-                                    ident: new_ty.clone(),
-                                    import: None,
-                                    generics: vec![],
-                                },
-                                span: new_ty.span,
-                            },
-                            DataState::Owner,
-                        ),
-                        &vec![],
-                        &vec![InterfaceParam {
-                            ident: ass_ident.clone(),
-                            state: ass_state,
-                            ty: ass_type,
-                            is_mut: false,
-                            span: ass_ident.span,
-                        }],
-                        self,
-                    );
-                }
+    fn for_methods(&mut self, meths: &HashMap<TypeKey, Vec<CustTyAss>>) {
+        // let association = self.get_methods(ty_key);
+        for each in meths {
+            let meth = self.get_methods(each.0);
+
+            if meth.is_some() {
+                let meth = meth.unwrap();
+                self.analyse_cust_ty_association(&meth);
+            } else {
+                panic!("method not found on symbol table")
             }
         }
+    }
 
-        // Furthermore, we need to see if any traits are to be implimented
+    fn check_impl(&mut self, ty: &TypeKey, ty_span: Span, traits: &Vec<Ident>) {
+        // We need to see if any trait methods needed to be implimented
         let mut all_trait_methods = Vec::new();
         // all_trait_methods is the method of all the traits
         // weither, it needed to be defined by the type or not
@@ -1676,349 +1771,154 @@ impl Analyser {
                 let mut trait_ = None;
                 // let file = None;
 
-                match elem {
-                    Element::Global(top) => {
-                        match &top {
-                            TopLevel::TraitDef {
-                                ident,
-                                generic_types: _,
-                                interprets: _,
-                                methods: _,
-                                is_public: _,
-                                info: _,
-                            } => {
-                                trait_ = Some((top.clone(), ident.span.clone()));
-                            }
-                            TopLevel::TakeStmt {
-                                take,
-                                from,
-                                lib,
-                                info: _,
-                            } => {
-                                match &from {
-                                    ModPath::Ident(mod_ident) => {
-                                        let module = self.unit.get(&mod_ident.ident);
-                                        if module.is_some() {
-                                            let module = module.unwrap();
-                                            match module {
-                                                NameSpace::Singular { name: _, file } => {
-                                                    if *lib == None {
-                                                        for g in &file.traits {
-                                                            match g {
-                                                                TopLevel::TraitDef {
-                                                                    ident,
-                                                                    generic_types: _,
-                                                                    interprets: _,
-                                                                    methods: _,
-                                                                    is_public,
-                                                                    info: _,
-                                                                } => {
-                                                                    match take.0.clone().kind {
-                                                                        Token::Identifier(s) => {
-                                                                            if s == ident.ident {
-                                                                                // found it
-                                                                                if *is_public {
-                                                                                    trait_ = Some((
-                                                                                        g.clone(),
-                                                                                        ident.span.clone(),
-                                                                                    ));
-                                                                                } else {
-                                                                                    show_default_err =
-                                                                                        false;
-                                                                                    self.errs.push(
-                                                                                        SemanticError {
-                                                                                            messages: vec![
-                                                                                                format!(
-                                                                                                    "{}, is not public",
-                                                                                                    ident.ident
-                                                                                                ),
-                                                                                            ],
-                                                                                            hints: vec![],
-                                                                                            span: ident
-                                                                                                .span
-                                                                                                .clone(),
-                                                                                        },
-                                                                                    );
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        _ => (),
-                                                                    }
-                                                                }
-                                                                _ => (),
-                                                            }
-                                                        }
-                                                    } else {
-                                                    }
-                                                }
-                                                NameSpace::Plural { name: _, files: _ } => {}
-                                                NameSpace::Lib { .. } => {}
-                                            }
-                                        } else {
-                                            show_default_err = false;
-                                            self.errs.push(SemanticError {
-                                                messages: vec![format!(
-                                                    "Can't find module '{:?}'",
-                                                    from
-                                                )],
-                                                hints: vec![],
-                                                span: mod_ident.span.clone(),
-                                            }); // for now
-                                        }
-                                    }
-                                    ModPath::Str(_) => {
-                                        todo!("Todo");
-                                    }
-                                    ModPath::UnExpected => {
-                                        todo!("Wow");
-                                    }
-                                    ModPath::FromLibFolder(_, _) => {
-                                        todo!("Take from Library folder")
-                                    }
-                                }
-                            }
-                            _ => (),
-                        }
+                match elem.clone() {
+                    ElemSignature::TraitDef {
+                        ident,
+                        generic_types: _,
+                        // interprets: _,
+                        methods: _,
+                        is_public: _,
+                        span: _,
+                    } => {
+                        trait_ = Some((elem, ident.span.clone()));
                     }
-                    Element::Local(block) => {
-                        match block {
-                            BlockLevel::TakeStmt {
-                                take,
-                                from,
-                                lib,
-                                info: _,
-                            } => {
-                                match &from {
-                                    ModPath::Ident(mod_ident) => {
-                                        let module = self.unit.get(&mod_ident.ident);
-                                        if module.is_some() {
-                                            let module = module.unwrap();
-                                            match module {
-                                                NameSpace::Singular { name: _, file } => {
-                                                    if lib == None {
-                                                        for g in &file.globals {
-                                                            match g {
-                                                                TopLevel::TraitDef {
-                                                                    ident,
-                                                                    generic_types: _,
-                                                                    interprets: _,
-                                                                    methods: _,
-                                                                    is_public,
-                                                                    info: _,
-                                                                } => {
-                                                                    match take.0.clone().kind {
-                                                                        Token::Identifier(s) => {
-                                                                            if s == ident.ident {
-                                                                                // found it
-                                                                                if *is_public {
-                                                                                    trait_ = Some((
-                                                                                        g.clone(),
-                                                                                        ident.span.clone(),
-                                                                                    ));
-                                                                                } else {
-                                                                                    self.errs.push(SemanticError {
-                                                                                    messages: vec![format!(
-                                                                                        "'{}', is not public",
-                                                                                        ident.ident
-                                                                                    )],
-                                                                                    hints: vec![],
-                                                                                    span: ident.span.clone(),
-                                                                                });
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        _ => (),
-                                                                    }
-                                                                }
-                                                                _ => (),
-                                                            }
-                                                        }
-                                                    } else {
-                                                    }
-                                                }
-                                                NameSpace::Plural { name: _, files: _ } => {}
-                                                NameSpace::Lib { .. } => {}
-                                            }
-                                        } else {
-                                            self.errs.push(SemanticError {
-                                                messages: vec![format!(
-                                                    "Can't find module '{:?}'",
-                                                    from
-                                                )],
-                                                hints: vec![],
-                                                span: mod_ident.span.clone(),
-                                            }); // for now
-                                        }
-                                    }
-                                    ModPath::Str(_) => {
-                                        todo!("todo");
-                                    }
-                                    ModPath::UnExpected => {
-                                        todo!("Woo");
-                                    }
-                                    ModPath::FromLibFolder(_, _) => {
-                                        todo!("Take from library folder")
-                                    }
-                                }
-                            }
-                            _ => (),
-                        }
-                    }
+                    ElemSignature::TakeStmt { elem, .. } => match elem.as_ref() {
+                        ElemSignature::TraitDef {
+                            ident,
+                            generic_types: _,
+                            // interprets: _,
+                            methods: _,
+                            is_public: _,
+                            span: _,
+                        } => trait_ = Some((*elem.clone(), ident.span.clone())),
+                        _ => (),
+                    },
+                    _ => (),
                 }
 
                 if trait_.is_some() {
                     let trait_ = trait_.unwrap();
                     match trait_.0 {
-                        TopLevel::TraitDef {
+                        ElemSignature::TraitDef {
                             ident,
                             generic_types: _,
-                            interprets: _,
+                            // interprets: _,
                             methods,
                             is_public: _,
-                            info: _,
+                            span: _,
                         } => {
                             if wk.ident == ident.ident {
                                 // found it
                                 show_default_err = false;
 
                                 for meth in methods {
-                                    match &meth {
-                                        Method {
+                                    match &meth.1 {
+                                        MethodCfg {
                                             worker_usage: _,
-                                            meth_self,
-                                            // inher_val: _,
-                                            // is_mut: _,
-                                            expect,
-                                            ret_state,
-                                            ident,
-                                            generics,
+                                            meth_self: _,
+                                            generics: _,
                                             is_public: _,
                                             is_extern,
-                                            par,
                                             block,
-                                            info: _,
+                                            ..
                                         } => {
-                                            let genr;
-                                            if generics.is_none() {
-                                                genr = vec![];
-                                            } else {
-                                                genr = generics.clone().unwrap();
-                                            }
-
-                                            if block.is_some() {
-                                                let block = block.clone().unwrap();
-                                                match expect.hint {
-                                                    TypeHint::Void => {
-                                                        blocklevel_analyser::check_for_val_compatibility(
-                                                                block.clone(),
-                                                                &blocklevel_analyser::Expect::Void,
-                                                                &genr,
-                                                                par,
-                                                                self,
-                                                            );
-                                                        // self.analyse_block(Expect::Void, &block);
-                                                    }
-                                                    _ => {
-                                                        blocklevel_analyser::check_for_val_compatibility(
-                                                                block.clone(),
-                                                                &blocklevel_analyser::Expect::Required(expect.clone(), ret_state.clone()),
-                                                                &genr,
-                                                                par,
-                                                                self,
-                                                            );
-                                                        // self.analyse_block(Expect::Required(expect.clone()), &block);
-                                                    }
-                                                }
-                                            }
-
                                             if all_trait_methods.contains(&ident.ident) {
                                                 self.errs.push(SemanticError {
-                                                        messages: vec![format!(
-                                                            "There is a clash of method identifier {} probably from another different trait",
-                                                            ident.ident.clone()
-                                                        )],
-                                                        hints: vec![],
-                                                        span: ident.span.clone(),
-                                                    });
+                                                    messages: vec![format!(
+                                                        "There is a clash of method identifier {} probably from another different trait",
+                                                        ident.ident.clone()
+                                                    )],
+                                                    hints: vec![],
+                                                    span: ident.span.clone(),
+                                                });
                                             } else {
                                                 all_trait_methods.push(ident.ident.clone());
                                             }
 
                                             // We need to check if the method is not extern and yet has no expression
-                                            // then enum_meths most have it's defination
+                                            // then their most be an implementation of the trait for the type that has the method
+
                                             if block.is_none() && is_extern.is_none() {
-                                                if enum_meths.contains_key(&ident.ident) {
-                                                    //chech if the enum_meths defination of it matched that of trait's
-                                                    let meth = enum_meths.get(&ident.ident);
+                                                let impls = self.get_impls(ty);
+                                                if impls.is_some() {
+                                                    let impls = impls.unwrap();
+                                                    let imp = impls.get(&wk.ident);
 
-                                                    if meth.is_some() {
-                                                        match meth.unwrap() {
-                                                            Method {
-                                                                worker_usage: _,
-                                                                meth_self: enum_meth_self,
-                                                                // inher_val,
-                                                                // is_mut,
-                                                                expect: _enum_expect,
-                                                                ret_state: _,
-                                                                ident: _enum_ident,
-                                                                generics: _enum_generics,
-                                                                is_public: _enum_public,
-                                                                is_extern: _enum_extern,
-                                                                par: _enum_par,
-                                                                block: _enum_block,
-                                                                info: _,
-                                                            } => {
-                                                                if meth_self.0 != enum_meth_self.0 {
-                                                                    // let hint_file =
-                                                                    //     if file.is_some() {
-                                                                    //         file.clone().unwrap()
-                                                                    //     } else {
-                                                                    //         self.modl.clone()
-                                                                    //     };
-
-                                                                    self.errs.push(SemanticError {
-                                                                            messages: vec![format!("The method should be {:?} of self", enum_meth_self)],
-                                                                            hints: vec![
-                                                                                ErrorHint {
-                                                                                    hints: vec![
-                                                                                        format!("Trait was defined here")
-                                                                                    ],
-                                                                                    span: trait_.1.clone()
-                                                                                }
-                                                                            ],
-                                                                            span: enum_meth_self.1.clone(),
-                                                                        });
+                                                    if imp.is_some() {
+                                                        let imp = imp.unwrap();
+                                                        let mut emit_error = true;
+                                                        match imp {
+                                                            TraitImpl { methods, .. } => {
+                                                                for m in methods {
+                                                                    match m {
+                                                                        Method {
+                                                                            ident, ..
+                                                                        } => {
+                                                                            if ident.ident == meth.0
+                                                                            {
+                                                                                //found the method
+                                                                                emit_error = false;
+                                                                                // the for_trait_impls() method checks if the method signature match their declaration
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
-
-                                                                // match enum_expect {
-
-                                                                // }
                                                             }
                                                         }
+
+                                                        if emit_error {
+                                                            self.errs.push(SemanticError {
+                                                                messages: vec![format!(
+                                                                    "Trait '{}' required '{}' to implement method '{}'",
+                                                                    wk.ident.clone(),
+                                                                    ty,
+                                                                    ident.ident.clone()
+                                                                )],
+                                                                hints: vec![
+                                                                    ErrorHint {
+                                                                        hints: vec![
+                                                                            format!("Trait was defined here")
+                                                                        ],
+                                                                        span: trait_.1.clone()
+                                                                    }
+                                                                ],
+                                                                span: ty_span.clone(),
+                                                            });
+                                                        }
+                                                    } else {
+                                                        self.errs.push(SemanticError {
+                                                            messages: vec![format!(
+                                                                "'{}' doesn't implement '{}'",
+                                                                ty,
+                                                                wk.ident.clone()
+                                                            )],
+                                                            hints: vec![ErrorHint {
+                                                                hints: vec![format!(
+                                                                    "Trait was defined here"
+                                                                )],
+                                                                span: trait_.1.clone(),
+                                                            }],
+                                                            span: ty_span.clone(),
+                                                        });
                                                     }
                                                 } else {
-                                                    // let hint_file = if file.is_some() {
-                                                    //     file.clone().unwrap()
-                                                    // } else {
-                                                    //     self.modl.clone()
-                                                    // };
                                                     self.errs.push(SemanticError {
-                                                            messages: vec![format!(
-                                                                "Trait '{}' required '{}' to define method '{}'",
-                                                                wk.ident.clone(),
-                                                                ty_ident.ident,
-                                                                ident.ident.clone()
-                                                            )],
-                                                            hints: vec![
-                                                                ErrorHint {
-                                                                    hints: vec![
-                                                                        format!("Trait was defined here")
-                                                                    ],
-                                                                    span: trait_.1.clone()
-                                                                }
-                                                            ],
-                                                            span: ty_ident.span.clone(),
-                                                        });
+                                                        messages: vec![format!(
+                                                            "Trait '{}' required '{}' to implement method '{}'",
+                                                            wk.ident.clone(),
+                                                            ty,
+                                                            ident.ident.clone()
+                                                        )],
+                                                        hints: vec![
+                                                            ErrorHint {
+                                                                hints: vec![
+                                                                    format!("Trait was defined here")
+                                                                ],
+                                                                span: trait_.1.clone()
+                                                            }
+                                                        ],
+                                                        span: ty_span.clone(),
+                                                    });
                                                 }
                                             }
                                         }
@@ -2052,12 +1952,13 @@ impl Analyser {
                     vals: _,
                     traits,
                     public: _,
-                    associateds,
-                    bridges,
                     info: _,
                 } => {
-                    self.analyse_cust_ty_association(enum_ident, associateds, traits, bridges);
-                    // if there are no trait implimentation then, we don't need to do anything else
+                    self.check_impl(
+                        &TypeKey::Custom(enum_ident.ident.clone()),
+                        enum_ident.span.clone(),
+                        traits,
+                    );
                 }
                 TopLevel::StructDecl {
                     ident: struct_ident,
@@ -2065,15 +1966,90 @@ impl Analyser {
                     vals: _,
                     traits,
                     public: _,
-                    associateds,
-                    bridges,
                     info: _,
                 } => {
-                    self.analyse_cust_ty_association(struct_ident, associateds, traits, bridges);
+                    self.check_impl(
+                        &TypeKey::Custom(struct_ident.ident.clone()),
+                        struct_ident.span.clone(),
+                        traits,
+                    );
                 }
                 _ => (),
             }
         }
+    }
+
+    pub fn hash_bridges(
+        &self,
+        bridges: &HashMap<String, Vec<BridgeDecl>>,
+    ) -> HashMap<String, HashMap<TypeKey, BridgeDecl>> {
+        // this function needs to check for clashes
+        let mut ret = HashMap::new();
+        for brg in bridges {
+            let mut all = HashMap::new();
+            for each in brg.1 {
+                match each {
+                    BridgeDecl { ass_type, .. } => {
+                        let res = parser::get_typekey(&ass_type.hint);
+
+                        if let Ok(key) = res {
+                            all.insert(key, each.clone());
+                        } else if let Err(err) = res {
+                            todo!("{:#?}", err);
+                        } else {
+                            panic!("Error")
+                        }
+                    }
+                }
+            }
+            ret.insert(brg.0.clone(), all);
+        }
+        ret
+    }
+
+    pub fn hash_methods(
+        &self,
+        methods: &HashMap<TypeKey, Vec<CustTyAss>>,
+    ) -> HashMap<TypeKey, HashMap<String, CustTyAss>> {
+        let mut ret = HashMap::new();
+        for meth in methods {
+            let mut all = HashMap::new();
+            for each in meth.1 {
+                match each {
+                    CustTyAss::Method(m) => match m {
+                        Method { ident, .. } => {
+                            all.insert(ident.ident.clone(), each.clone());
+                        }
+                    },
+                    CustTyAss::AssFunction(func) => match func {
+                        AssFunc { ident, .. } => {
+                            all.insert(ident.ident.clone(), each.clone());
+                        }
+                    },
+                }
+            }
+            ret.insert(meth.0.clone(), all);
+        }
+        ret
+    }
+
+    pub fn hash_trt_impls(
+        &self,
+        trait_impls: &HashMap<TypeKey, Vec<TraitImpl>>,
+    ) -> HashMap<TypeKey, HashMap<String, TraitImpl>> {
+        let mut ret = HashMap::new();
+        for imp in trait_impls {
+            let mut all = HashMap::new();
+            for each in imp.1 {
+                match each {
+                    TraitImpl { trt, .. } => {
+                        all.insert(trt.ident.clone(), each.clone());
+                    }
+                }
+            }
+            ret.insert(imp.0.clone(), all);
+        }
+        ret
     }
 
     fn go_through_mod(&mut self, this: &Mod) {
@@ -2081,283 +2057,152 @@ impl Analyser {
             Mod {
                 mod_docs: _,
                 main_fn,
-                macro_defs: _,
+                panic_fn,
+                // macro_defs: _,
                 fns,
-                platform_n_s,
+                os_n_s,
+                arch_n_s: _,
                 takes: _,
                 globals,
                 traits: _,
                 workers: _,
-                statics,
+                statics: _,
                 custom_tys,
+                methods,
+                bridges: _,
+                trait_impls: _,
                 lines: _,
                 scope: _,
             } => {
-                // We need to analyse statics first since functions might need it for Static -> func_call() expressions
-                // Statics
-                for stat in statics {
-                    // let mut static_symbol_table = Vec::new();
-                    // static_symbol_table.push(HashMap::new());
-                    match stat {
-                        TopLevel::StaticDef {
-                            ident,
-                            public: _,
-                            block,
-                            info: _,
-                        } => match block.clone() {
-                            CustomBlock {
-                                takes,
-                                globals,
-                                macro_def,
-                                custom_tys,
-                                traits,
-                                workers,
-                                funcs,
-                                platform_n_s: _,
-                                static_defs: _,
-                            } => {
-                                let static_mod_name = ident.ident.clone() + &"--static";
-                                let mut top_macros = vec![];
-                                let mut top_fns = vec![];
-                                let mut top_takes = vec![];
-                                let mut top_globals = vec![];
-                                let mut top_traits = vec![];
-                                let mut top_workers = vec![];
-                                let mut top_customs = vec![];
+                // panic fn
+                {
+                    // then check if the included libraries have panic
+                    let mut has_panic = vec![];
+                    let mut all_ackn_panic = vec![];
+                    for lib in &self.lib_list {
+                        let dp = self.unit.get(lib);
 
-                                {
-                                    for mac in macro_def {
-                                        match mac {
-                                            CustomLevel::MacroDef {
-                                                ident,
-                                                is_public,
-                                                cases,
-                                                info,
-                                            } => {
-                                                top_macros.push(TopLevel::MacroDef {
-                                                    ident,
-                                                    is_public,
-                                                    cases,
-                                                    info,
-                                                });
-                                            }
-                                            _ => (),
-                                        }
+                        if dp.is_some() {
+                            let dp = dp.unwrap();
+                            match dp {
+                                NameSpace::Lib {
+                                    name,
+                                    manifest,
+                                    entry: _,
+                                    ackn_panic,
+                                    src: _,
+                                } => {
+                                    if manifest.package.panic_fn == PanicFn::Owned {
+                                        has_panic.push(name.clone());
                                     }
 
-                                    for func in funcs {
-                                        match func {
-                                            CustomLevel::FuncDecl {
-                                                is_async,
-                                                expect,
-                                                ret_state,
-                                                ident,
-                                                generics,
-                                                is_public,
-                                                is_visible: _,
-                                                is_extern,
-                                                par,
-                                                worker_usage,
-                                                block,
-                                                info,
-                                            } => {
-                                                top_fns.push(TopLevel::FuncDecl {
-                                                    is_async,
-                                                    expect,
-                                                    ret_state,
-                                                    ident,
-                                                    generics,
-                                                    is_visible: false,
-                                                    is_public,
-                                                    is_extern,
-                                                    par,
-                                                    worker_usage,
-                                                    block,
-                                                    info,
-                                                });
-                                            }
-                                            _ => (),
-                                        }
-                                    }
-
-                                    for tk in takes {
-                                        match tk {
-                                            CustomLevel::TakeStmt {
-                                                take,
-                                                from,
-                                                lib,
-                                                info,
-                                            } => {
-                                                top_takes.push(TopLevel::TakeStmt {
-                                                    take,
-                                                    from,
-                                                    lib,
-                                                    info,
-                                                });
-                                            }
-                                            _ => (),
-                                        }
-                                    }
-
-                                    for glo in globals {
-                                        match glo {
-                                            CustomLevel::GlobalDecl {
-                                                interpret,
-                                                state,
-                                                ty,
-                                                name,
-                                                value,
-                                                public,
-                                                info,
-                                            } => {
-                                                top_globals.push(TopLevel::GlobalDecl {
-                                                    interpret,
-                                                    state,
-                                                    ty,
-                                                    name,
-                                                    value,
-                                                    public,
-                                                    info,
-                                                });
-                                            }
-                                            _ => (),
-                                        }
-                                    }
-
-                                    for tr in traits {
-                                        match tr {
-                                            CustomLevel::TraitDef {
-                                                ident,
-                                                generic_types,
-                                                interprets,
-                                                methods,
-                                                is_public,
-                                                info,
-                                            } => {
-                                                top_traits.push(TopLevel::TraitDef {
-                                                    ident,
-                                                    generic_types,
-                                                    interprets,
-                                                    methods,
-                                                    is_public,
-                                                    info,
-                                                });
-                                            }
-                                            _ => (),
-                                        }
-                                    }
-
-                                    for wk in workers {
-                                        match wk {
-                                            CustomLevel::WorkerDef {
-                                                ident,
-                                                func_name,
-                                                public,
-                                                block,
-                                                info,
-                                            } => {
-                                                top_workers.push(TopLevel::WorkerDef {
-                                                    ident,
-                                                    func_name,
-                                                    public,
-                                                    block,
-                                                    info,
-                                                });
-                                            }
-                                            _ => (),
-                                        }
-                                    }
-
-                                    for cus in custom_tys {
-                                        match cus {
-                                            CustomLevel::EnumDecl {
-                                                ident,
-                                                generic_types,
-                                                vals,
-                                                traits,
-                                                public,
-                                                associateds,
-                                                bridges,
-                                                info,
-                                            } => {
-                                                top_customs.push(TopLevel::EnumDecl {
-                                                    ident,
-                                                    generic_types,
-                                                    vals,
-                                                    traits,
-                                                    public,
-                                                    associateds,
-                                                    bridges,
-                                                    info,
-                                                });
-                                            }
-                                            CustomLevel::StructDecl {
-                                                ident,
-                                                generic_types,
-                                                vals,
-                                                traits,
-                                                public,
-                                                associateds,
-                                                bridges,
-                                                info,
-                                            } => {
-                                                top_customs.push(TopLevel::StructDecl {
-                                                    ident,
-                                                    generic_types,
-                                                    vals,
-                                                    traits,
-                                                    public,
-                                                    associateds,
-                                                    bridges,
-                                                    info,
-                                                });
-                                            }
-                                            _ => (),
-                                        }
+                                    if *ackn_panic {
+                                        all_ackn_panic.push(name.clone());
                                     }
                                 }
-
-                                let mut static_mod = Mod {
-                                    mod_docs: None,
-                                    main_fn: None,
-                                    macro_defs: top_macros,
-                                    fns: top_fns,
-                                    platform_n_s: vec![],
-                                    takes: top_takes,
-                                    globals: top_globals,
-                                    traits: top_traits,
-                                    workers: top_workers,
-                                    statics: vec![],
-                                    custom_tys: top_customs,
-                                    lines: vec![],
-                                    scope: 0,
-                                };
-
-                                self.unit.insert(
-                                    static_mod_name.clone(),
-                                    NameSpace::Singular {
-                                        name: static_mod_name.clone(),
-                                        file: static_mod.clone(),
-                                    },
-                                );
-                                // Initialise
-                                let current_symbol_table = self.symbol_table.clone();
-                                self.symbol_table = vec![];
-                                self.symbol_table.push(HashMap::new());
-                                name_resolver::register_mod_level_elems(self, &mut static_mod);
-                                // Then analyse it...
-
-                                // Globals
-                                self.for_globals(&static_mod.globals);
-
-                                // ...Functions
-                                self.for_funcs(&static_mod.fns);
-
-                                self.unit.remove(&static_mod_name);
-                                self.symbol_table = current_symbol_table;
+                                _ => panic!(""),
                             }
-                        },
-                        _ => (),
+                        } else {
+                            panic!("dp data not found")
+                        }
+                    }
+
+                    if panic_fn.is_some() {
+                        // this unit has it own panic function
+                        if all_ackn_panic.len() == 0 {
+                            // and non is choosen
+                            self.panic_from = PanicFn::Owned;
+                        } else {
+                            // there are one or more acknowlegbements
+                            self.errs.push(SemanticError {
+                                messages: vec![
+                                    format!("There is a local panic function; remove any gba_fòyà flag on included libraries")
+                                ],
+                                hints: vec![],
+                                span: Span {
+                                    st: Pos {
+                                        column: 0,
+                                        line: 0
+                                    },
+                                    en: Pos {
+                                        column: 0,
+                                        line: 0
+                                    },
+                                    file: self.entry.clone()
+                                },
+                            });
+                        }
+                    } else {
+                        // if there is no local panic fn
+                        // check if this is the primary entry module
+                        if self.entry == self.modl {
+                            if has_panic.len() == 0 {
+                                // There is no panic at all
+                                self.errs.push(SemanticError {
+                                    messages: vec![
+                                        format!("Provide a local panic function or include a library with one e.g ipl(std)")
+                                    ],
+                                    hints: vec![],
+                                    span: Span {
+                                        st: Pos {
+                                            column: 0,
+                                            line: 0
+                                        },
+                                        en: Pos {
+                                            column: 0,
+                                            line: 0
+                                        },
+                                        file: self.entry.clone()
+                                    },
+                                });
+                            } else if has_panic.len() == 1 {
+                                // the one will be used
+                                self.panic_from = PanicFn::Borrowed(has_panic[0].clone());
+                            } else {
+                                // we have more that one libraries that have panic function
+                                if all_ackn_panic.len() == 0 {
+                                    // and non is choosen
+                                    self.errs.push(SemanticError {
+                                        messages: vec![
+                                            format!("There are multiple libraries with panic defined. You can choose one with the gba_fòyà keyword")
+                                        ],
+                                        hints: vec![],
+                                        span: Span {
+                                            st: Pos {
+                                                column: 0,
+                                                line: 0
+                                            },
+                                            en: Pos {
+                                                column: 0,
+                                                line: 0
+                                            },
+                                            file: self.entry.clone()
+                                        },
+                                    });
+                                } else if all_ackn_panic.len() > 1 {
+                                    self.errs.push(SemanticError {
+                                        messages: vec![
+                                            format!("There is an attempt to use more than one panic implementations in this unit")
+                                        ],
+                                        hints: vec![],
+                                        span: Span {
+                                            st: Pos {
+                                                column: 0,
+                                                line: 0
+                                            },
+                                            en: Pos {
+                                                column: 0,
+                                                line: 0
+                                            },
+                                            file: self.entry.clone()
+                                        },
+                                    });
+                                } else {
+                                    // there is one acknowlegbement
+                                    self.panic_from = PanicFn::Borrowed(all_ackn_panic[0].clone());
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2501,7 +2346,10 @@ impl Analyser {
                 // Custom Types
                 self.for_custom_types(custom_tys);
 
-                self.for_platform(platform_n_s);
+                // methods
+                self.for_methods(methods);
+
+                self.for_os_target(os_n_s);
             }
         }
     }
@@ -2511,21 +2359,31 @@ impl Analyser {
         // Analyse the types first (Type checking)
         // Note: type_checker will not only be checking type compatibility but also resourse
 
+        // Resolve the symbol table of all modules at the top level
+        // This is done at ones to make importation of top elements easier
+        name_resolver::register_mod_level_elems(self);
+
         // For each Mod
         for this_mod in self.unit.clone() {
             self.modl = this_mod.0.clone();
-            self.symbol_table.push(HashMap::new()); // initializing the global scope
-                                                    // there is only the global scope at this stage
+            let table = self.symbol_tables.get(&this_mod.0);
 
-            match this_mod.1 {
-                NameSpace::Singular { name: _, file } => {
-                    name_resolver::register_mod_level_elems(self, &file);
-                    self.go_through_mod(&file);
-                    self.symbol_table = Vec::new(); // clear for the hir and eventually main function of the main module/file to have a fresh start
+            if table.is_some() {
+                let table = table.unwrap();
+                self.symbol_table = table.to_owned();
+                // self.symbol_table.push(HashMap::new()); // initializing the global scope
+                // there is only the global scope at this stage
+
+                match this_mod.1 {
+                    NameSpace::Singular { name: _, file } => {
+                        self.go_through_mod(&file);
+                        self.symbol_table = vec![]; // clear for the cfg to have a fresh start
                                                     // And do it after borrrow checkings
+                    }
+                    _ => (),
                 }
-                NameSpace::Plural { name: _, files: _ } => {}
-                _ => (),
+            } else {
+                todo!("module not found in symbol table error")
             }
         }
     }

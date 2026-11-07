@@ -965,7 +965,7 @@ impl Codegen {
                     let inner = self.gen_type(tysp);
                     LLVMPointerType(inner, 0)
                 }
-                TypeHint::Custom { ident, .. } => match self.lookup(&ident.ident) {
+                TypeHint::Custom { get, .. } => match self.lookup(&ident.ident) {
                     Some(Elem::Struct { ty, .. }) => *ty,
                     Some(Elem::Enum { ty, .. }) => *ty,
                     Some(Elem::Type(ty)) => *ty,
@@ -1238,7 +1238,7 @@ impl Codegen {
             // check the platform's target against the current target
             if platform.arms.len() > 0 {
                 match &platform.arms[0].target.kind {
-                    ExprKind::ElemNamespaceAccess {
+                    ExprKind::NamespaceAccess {
                         ident: Some(ident), ..
                     } => {
                         if ident.ident == String::from("KM") || ident.ident == String::from("IrúẸ̀rọ") {
@@ -1257,7 +1257,7 @@ impl Codegen {
                             for arm in platform.arms.iter() {
                                 match arm {
                                     PlatformArmInfo { target, .. } => match &target.kind {
-                                        ExprKind::ElemNamespaceAccess { access, .. } => {
+                                        ExprKind::NamespaceAccess { access, .. } => {
                                             match &access.kind {
                                                 ExprKind::Ident { ident, .. } => {
                                                     if ident.ident == *os || ident.ident == *arch {
@@ -1286,10 +1286,11 @@ impl Codegen {
                                         traits: _,
                                         workers: _,
                                         statics: _,
+                                        macro_defs: _,
                                         custom_tys,
-                                        methods: _,
-                                        static_meths: _,
-                                        bridges: _,
+                                        // methods: _,
+                                        // static_meths: _,
+                                        // bridges: _,
                                         main_fn: _,
                                         funcs
                                     } => {
@@ -1323,9 +1324,10 @@ impl Codegen {
                                             workers: _,
                                             statics: _,
                                             custom_tys,
-                                            methods: _,
-                                            static_meths: _,
-                                            bridges: _,
+                                            // methods: _,
+                                            macro_defs: _,
+                                            // static_meths: _,
+                                            // bridges: _,
                                             main_fn: _,
                                             funcs
                                         } => {

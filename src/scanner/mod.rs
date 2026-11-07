@@ -13,13 +13,13 @@ use std::str::Chars;
 
 use crate::parser::{self, Error};
 
-#[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Debug)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Debug)]
 pub struct Pos {
     pub column: usize, //The start offset is stored in a byte
     pub line: usize,   //The end offset stored in byte
 }
 
-#[derive(Clone, Eq, PartialEq, PartialOrd, Debug)]
+#[derive(Clone, Eq, Hash, PartialEq, PartialOrd, Debug)]
 pub struct Span {
     pub st: Pos, //The start offset is stored in a byte
     pub en: Pos, //The end offset stored in byte
@@ -32,14 +32,14 @@ pub struct Span {
 //     pub en: usize, //The end offset stored in byte
 // }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd)]
 #[allow(dead_code)]
 pub struct FullTok {
     pub kind: Token,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd)]
 #[allow(dead_code)]
 pub enum TruthVal {
     True,
@@ -59,30 +59,30 @@ impl Display for Token {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd)]
 #[allow(dead_code)]
 pub enum Token {
     // Keywords
     Use,         // lo
     Take,        // mú
     Worker,      // òṣìṣẹ; known as decorators in python
-    Macro,       // from tú (to desolve)
+    Macro,       // àwòkọ
     Static,      // adágún
     NameAs,       // pèéní
     As,         // bíi
     Global,      // kárí
-    Function,    // itú
+    Function,    // iṣẹ́
+    Methods,     // ìṣe
     Async,       // tàṣé
     Await,       // dúróde
     Start,       // bẹ̀rẹ̀
-    Target,     // àfojúsùn
     FlowThrough, // ré
     Struct,      // ìrísí
     Enum,        // apẹ̀rẹ̀
     If,          // tí
     Else,        // àìjẹ́bẹ̀
     Loop,        // pòrì
-    While,       // níwọ̀n ọn bí / níwọ̀nọnbí
+    While,       // níwọ̀n ọn bí / níwọ̀nbí
     Do,          // ṣe
     To,          // sí
     Try,         // gbìyànjú
@@ -93,23 +93,30 @@ pub enum Token {
     For,         // fún
     Continue,    // tẹ̀síwájú
     Return,      // padà
-    RetVal,      // jọ̀wọ́
+    RetVal,      // ju
     Break,       // já
     Public,      // gbangba
     Private,     // àdáni
     Mut,         // tóyí
-    SelfKw,      // alára
+    SelfKw,      // òwun
     From,        // látinú
     Bridge,      // afárá
     Create,      // ṣẹ̀dá
     Extern,      // látòde
+    ToExtern,    // sóde
     Inherit,     // jogún
     Interpret,   // túmọ̀; like comptime in Zig
     Trait,       // àfijọ
+    Apply,      // fi "impl"
+    Resemble,   // jọ
+    Workshop,   // ibiṣẹ́ "for method declarations"
     Have,        //ní
     Move,        // kó
-    Default,     // àrọ́sí
     Peeking,     // máa_ṣa
+    AcknPanic,   // gba_fòyà
+
+    Os,         // km
+    Arch,       // ẹ̀rọ
 
     NewLine,
 
@@ -118,9 +125,6 @@ pub enum Token {
     // Variable
     Var,    // kí
     Assign, // yí
-
-    // Constructor
-    Constructor, // ::
 
     // Type hints
     TypeHint(String),
@@ -325,7 +329,7 @@ impl<'a> LexedSelf<'a> {
                             kind: Token::Static,
                             span: d_span,
                         },
-                        "àgánkọ" => FullTok {
+                        "àwòkọ" => FullTok {
                             kind: Token::Macro,
                             span: d_span,
                         },
@@ -339,10 +343,6 @@ impl<'a> LexedSelf<'a> {
                         },
                         "kárí" => FullTok {
                             kind: Token::Global,
-                            span: d_span,
-                        },
-                        "àfojúsùn" => FullTok {
-                            kind: Token::Target,
                             span: d_span,
                         },
                         "dúróde" => FullTok {
@@ -401,8 +401,8 @@ impl<'a> LexedSelf<'a> {
                             kind: Token::Match,
                             span: d_span,
                         },
-                        "wo" => FullTok {
-                            kind: Token::Case,
+                        "ìṣe" => FullTok {
+                            kind: Token::Methods,
                             span: d_span,
                         },
                         "fún" => FullTok {
@@ -427,6 +427,10 @@ impl<'a> LexedSelf<'a> {
                         },
                         "látòde" => FullTok {
                             kind: Token::Extern,
+                            span: d_span,
+                        },
+                        "sóde" => FullTok {
+                            kind: Token::ToExtern,
                             span: d_span,
                         },
                         "gbangba" => FullTok {
@@ -461,6 +465,14 @@ impl<'a> LexedSelf<'a> {
                             kind: Token::Trait,
                             span: d_span,
                         },
+                        "fi" => FullTok {
+                            kind: Token::Apply,
+                            span: d_span,
+                        },
+                        "jọ" => FullTok {
+                            kind: Token::Resemble,
+                            span: d_span,
+                        },
                         "padà" => FullTok {
                             kind: Token::Return,
                             span: d_span,
@@ -493,6 +505,21 @@ impl<'a> LexedSelf<'a> {
                             kind: Token::Peeking,
                             span: d_span,
                         },
+                        "gba_fòyà" => FullTok {
+                            kind: Token::AcknPanic,
+                            span: d_span,
+                        },
+
+
+                        "km" => FullTok {
+                            kind: Token::Os,
+                            span: d_span,
+                        },
+                        "ẹ̀rọ" => FullTok {
+                            kind: Token::Arch,
+                        span: d_span,
+                        },
+
 
                         "òfìfo" => FullTok {
                             kind: Token::Void,
@@ -508,7 +535,7 @@ impl<'a> LexedSelf<'a> {
                             kind: Token::ArityLiteral(TruthVal::False),
                             span: d_span,
                         },
-                        "bóyá" => FullTok {
+                        "àìmọ̀" => FullTok {
                             kind: Token::ArityLiteral(TruthVal::Unknown),
                             span: d_span,
                         },
@@ -516,14 +543,13 @@ impl<'a> LexedSelf<'a> {
                             kind: Token::ArityLiteral(TruthVal::Both),
                             span: d_span,
                         },
-                        "àrọ́sí" => FullTok {
-                            kind: Token::Default,
-                            span: d_span,
-                        },
 
                         // Type hints
                         "àtó_d" | "àtó_p" | "àtó_b" | "wóró" | "ọsán" | "ǹjẹ́" | "ibùta"
-                        | "ibùrin" | "àṣàyàn" | "àyọrísí" | "òpin" => FullTok {
+                        | "ibùrin" | "àṣàyàn" | "àyọrísí" | "òpin"
+                        | "d8" | "d16" | "d32" | "d64" | "d128"
+                        | "p8" | "p16" | "p32" | "p64" | "p128"//  unsigned
+                        | "b8" | "b16" | "b32" | "b64" | "b128" => FullTok {
                             kind: Token::TypeHint(ident),
                             span: d_span,
                         },

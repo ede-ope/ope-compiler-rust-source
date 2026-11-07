@@ -1,14 +1,15 @@
+use crate::analyser::{Analyser, Variable};
 use crate::borrow_checker::FuncDeclInfo;
 use crate::compiler::{ErrorHint, Mod, NameSpace, SemanticError};
 use crate::move_checker;
 use crate::name_resolver;
+use crate::name_resolver::ElemSignature;
 use crate::parser::{
     BlockLevel, Case, CustTyAss, CustomBlock, CustomLevel, DataState, ElseIf, EnumVariants, Expr,
     ExprKind, FieldAssignm, ForAssign, Generic, Ident, IdentAffix, InterfaceParam, Method, ModPath,
     MutStatus, Parameter, StmtInfo, StructParam, TopLevel, TypeHint, TypeSpec,
 };
 use crate::scanner::{FullTok, Pos, Span, Token};
-use crate::analyser::{Analyser, Element, Variable};
 use crate::type_checker;
 use std::collections::HashMap;
 
@@ -89,7 +90,7 @@ pub fn get_field_type(
     };
 
     match &ty.hint {
-        TypeHint::Custom { import, ident, .. } => {
+        TypeHint::Custom { get, access, .. } => {
             match expr {
                 Expr {
                     kind:
@@ -101,123 +102,125 @@ pub fn get_field_type(
                         },
                     span: _,
                 } => {
-                    let cus_ty = analyser.get_custom_type(import, &ident, genrs);
+                    let cus_ty = analyser.get_custom_type(get, access, genrs);
                     let mut meth_type = None;
                     let mut parameters = None;
 
                     if cus_ty.is_some() {
                         match cus_ty.unwrap() {
-                            TopLevel::EnumDecl {
+                            ElemSignature::EnumDecl {
                                 ident: _,
                                 generic_types: _,
                                 vals: _,
                                 traits: _,
                                 public: _,
-                                associateds,
-                                bridges: _,
-                                info: _,
+                                span: _,
                             }
-                            | TopLevel::StructDecl {
+                            | ElemSignature::StructDecl {
                                 ident: _,
                                 generic_types: _,
                                 vals: _,
                                 traits: _,
                                 public: _,
-                                associateds,
-                                bridges: _,
-                                info: _,
+                                span: _,
                             } => {
-                                for meth in associateds {
-                                    match meth {
-                                        CustTyAss::Method(method) => {
-                                            match method {
-                                                Method {
-                                                    worker_usage: _,
-                                                    meth_self: _,
-                                                    // inher_val: _,
-                                                    // is_mut: _,
-                                                    expect,
-                                                    ret_state: _,
-                                                    ident,
-                                                    generics,
-                                                    is_public: _,
-                                                    is_extern: _,
-                                                    par,
-                                                    block: _,
-                                                    info: _,
-                                                } => {
-                                                    let expect = expect.clone();
-                                                    if ident.ident == buffer_name.ident {
-                                                        let genr_vec = if generics.is_none() {
-                                                            Vec::new()
-                                                        } else {
-                                                            generics.clone().unwrap()
-                                                        };
-                                                        if buffer_generics.len() != genr_vec.len() {
-                                                            analyser.errs.push(SemanticError {
-                                                                messages: vec![format!(
-                                                                    "Expected {} generics, but found {}",
-                                                                    genr_vec.len(), buffer_generics.len()
-                                                                )],
-                                                                hints: vec![
-                                                                    ErrorHint {
-                                                                        hints: vec![format!("The generic types are declared here for this type")],
-                                                                        span: ident.span.clone()
-                                                                    }
-                                                                ],
-                                                                span: buffer_name.span.clone(),
-                                                            });
-                                                        }
-
-                                                        if buffer_args.len() != par.len() {
-                                                            analyser.errs.push(SemanticError {
-                                                                messages: vec![format!(
-                                                                    "Expected {} argument(s), but found {}",
-                                                                    par.len(),
-                                                                    buffer_args.len()
-                                                                )],
-                                                                hints: vec![ErrorHint {
-                                                                    hints: vec![format!(
-                                                                        "Method is defined here"
+                                let meths = analyser.methods.get(&buffer_name.ident);
+                                if meths.is_some() {
+                                    let meths = meths.unwrap();
+                                    for meth in meths {
+                                        match meth.1 {
+                                            CustTyAss::Method(method) => {
+                                                match method {
+                                                    Method {
+                                                        worker_usage: _,
+                                                        meth_self: _,
+                                                        // inher_val: _,
+                                                        // is_mut: _,
+                                                        expect,
+                                                        ret_state: _,
+                                                        ident,
+                                                        generics,
+                                                        is_public: _,
+                                                        is_extern: _,
+                                                        par,
+                                                        block: _,
+                                                        info: _,
+                                                    } => {
+                                                        let expect = expect.clone();
+                                                        if ident.ident == buffer_name.ident {
+                                                            let genr_vec = if generics.is_none() {
+                                                                Vec::new()
+                                                            } else {
+                                                                generics.clone().unwrap()
+                                                            };
+                                                            if buffer_generics.len()
+                                                                != genr_vec.len()
+                                                            {
+                                                                analyser.errs.push(SemanticError {
+                                                                    messages: vec![format!(
+                                                                        "Expected {} generics, but found {}",
+                                                                        genr_vec.len(), buffer_generics.len()
                                                                     )],
-                                                                    span: ident.span.clone(),
-                                                                }],
-                                                                span: buffer_name.span.clone(),
-                                                            });
-                                                        }
-                                                        // argument types need to be varified
-                                                        let mut j = 0;
-                                                        for param in &par {
-                                                            match param {
-                                                                InterfaceParam {
-                                                                    ident: _,
-                                                                    state,
-                                                                    ty,
-                                                                    is_mut: _,
-                                                                    span: _,
-                                                                } => {
-                                                                    validate_assignment(
-                                                                        ty,
-                                                                        state.clone(),
-                                                                        &buffer_args[j],
-                                                                        &vec![],
-                                                                        &vec![],
-                                                                        analyser,
-                                                                    );
-                                                                }
+                                                                    hints: vec![
+                                                                        ErrorHint {
+                                                                            hints: vec![format!("The generic types are declared here for this type")],
+                                                                            span: ident.span.clone()
+                                                                        }
+                                                                    ],
+                                                                    span: buffer_name.span.clone(),
+                                                                });
                                                             }
-                                                            j += 1;
-                                                        }
 
-                                                        meth_type = Some(expect);
-                                                        parameters = Some(par);
-                                                        break;
+                                                            if buffer_args.len() != par.len() {
+                                                                analyser.errs.push(SemanticError {
+                                                                    messages: vec![format!(
+                                                                        "Expected {} argument(s), but found {}",
+                                                                        par.len(),
+                                                                        buffer_args.len()
+                                                                    )],
+                                                                    hints: vec![ErrorHint {
+                                                                        hints: vec![format!(
+                                                                            "Method is defined here"
+                                                                        )],
+                                                                        span: ident.span.clone(),
+                                                                    }],
+                                                                    span: buffer_name.span.clone(),
+                                                                });
+                                                            }
+                                                            // argument types need to be varified
+                                                            let mut j = 0;
+                                                            for param in &par {
+                                                                match param {
+                                                                    InterfaceParam {
+                                                                        ident: _,
+                                                                        state,
+                                                                        ty,
+                                                                        is_mut: _,
+                                                                        span: _,
+                                                                    } => {
+                                                                        validate_assignment(
+                                                                            ty,
+                                                                            state.clone(),
+                                                                            &buffer_args[j],
+                                                                            &vec![],
+                                                                            &vec![],
+                                                                            analyser,
+                                                                        );
+                                                                    }
+                                                                }
+                                                                j += 1;
+                                                            }
+
+                                                            meth_type = Some(expect);
+                                                            parameters = Some(par);
+                                                            break;
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                        CustTyAss::AssFunction(_) => {
-                                            todo!("tode");
+                                            CustTyAss::AssFunction(_) => {
+                                                todo!("tode");
+                                            }
                                         }
                                     }
                                 }
@@ -519,56 +522,30 @@ fn _get_type_origin(ident: &Ident, analyser: &mut Analyser) -> String {
         let ty = element.unwrap();
 
         match ty {
-            Element::Global(toplevel) => match toplevel {
-                TopLevel::TakeStmt {
-                    take: _,
-                    from,
-                    lib,
-                    info: _,
-                } => {
-                    let ret;
-                    let mod_str = match &from {
-                        ModPath::Ident(ident) => ident.clone().ident,
-                        ModPath::Str(string) => string.clone().ident,
-                        ModPath::FromLibFolder(f, m) => format!("{}/{}", f.ident, m.ident),
-                        ModPath::UnExpected => format!("Unknown"),
-                    };
+            ElemSignature::TakeStmt {
+                elem: _,
+                as_: _,
+                from,
+                lib,
+                info: _,
+            } => {
+                let ret;
+                let mod_str = match &from {
+                    ModPath::Ident(ident) => ident.clone().ident,
+                    ModPath::Str(string) => string.clone().ident,
+                    ModPath::FromLibFolder(f, m) => format!("{}/{}", f.ident, m.ident),
+                    ModPath::UnExpected => format!("Unknown"),
+                };
 
-                    if lib.is_none() {
-                        ret = mod_str;
-                    } else {
-                        ret = format!("{}::{}", mod_str, lib.unwrap().ident);
-                    }
-
-                    ret
+                if lib.is_none() {
+                    ret = mod_str;
+                } else {
+                    ret = format!("{}::{}", mod_str, lib.unwrap().ident);
                 }
-                _ => analyser.modl.clone(),
-            },
-            Element::Local(block_level) => match block_level {
-                BlockLevel::TakeStmt {
-                    take: _,
-                    from,
-                    lib,
-                    info: _,
-                } => {
-                    let ret;
-                    let mod_str = match &from {
-                        ModPath::Ident(ident) => ident.clone().ident,
-                        ModPath::Str(string) => string.clone().ident,
-                        ModPath::FromLibFolder(f, m) => format!("{}/{}", f.ident, m.ident),
-                        ModPath::UnExpected => format!("Unknown"),
-                    };
 
-                    if lib.is_none() {
-                        ret = mod_str;
-                    } else {
-                        ret = format!("{}::{}", mod_str, lib.unwrap().ident);
-                    }
-
-                    ret
-                }
-                _ => analyser.modl.clone(),
-            },
+                ret
+            }
+            _ => format!("<unknown>"),
         }
     } else {
         analyser.modl.clone()
@@ -576,7 +553,7 @@ fn _get_type_origin(ident: &Ident, analyser: &mut Analyser) -> String {
 }
 
 pub fn validate_custom_type_value(
-    type_def: &TopLevel,
+    type_def: &ElemSignature,
     par_type: &TypeSpec,
     expr: &Expr,
     analyser: &mut Analyser,
@@ -593,42 +570,52 @@ pub fn validate_custom_type_value(
     }
 
     match type_def {
-        TopLevel::EnumDecl {
+        ElemSignature::EnumDecl {
             ident,
             generic_types,
             vals,
             traits: _,
             public: _,
-            associateds: _,
-            bridges: _,
-            info: _,
+            span: _,
         } => {
             match expr {
                 Expr {
                     kind:
-                        ExprKind::ElemNamespaceAccess {
+                        ExprKind::NamespaceAccess {
                             ident: lit_ident,
                             access,
                         },
                     span,
                 } => {
-                    if lit_ident.is_some() {
-                        if lit_ident.clone().unwrap().ident != ident.ident {
-                            analyser.errs.push(SemanticError {
-                                messages: vec![format!(
-                                    "Expected type {:?} but found {:?}",
-                                    ident.ident,
-                                    lit_ident.clone().unwrap().ident
-                                )],
-                                hints: vec![],
-                                span: span.clone(),
-                            });
-                            return;
+                    if access.len() == 1 {
+                        if lit_ident.is_some() {
+                            if lit_ident.clone().unwrap().ident != ident.ident {
+                                analyser.errs.push(SemanticError {
+                                    messages: vec![format!(
+                                        "Expected type {:?} but found {:?}",
+                                        ident.ident,
+                                        lit_ident.clone().unwrap().ident
+                                    )],
+                                    hints: vec![],
+                                    span: span.clone(),
+                                });
+                                return;
+                            }
                         }
-                    }
 
-                    validate_enum_variant(ident, vals, *&access, generic_types, &genrs, analyser);
+                        validate_enum_variant(
+                            ident,
+                            vals,
+                            &access[0],
+                            generic_types,
+                            &genrs,
+                            analyser,
+                        );
+                    } else {
+                        todo!("To be implemented: Imported Enum");
+                    }
                 }
+
                 // Expr {
                 //     kind:
                 //         ExprKind::Custom {
@@ -668,15 +655,13 @@ pub fn validate_custom_type_value(
                 }
             }
         }
-        TopLevel::StructDecl {
+        ElemSignature::StructDecl {
             ident,
             generic_types,
             vals,
             traits: _,
             public: _,
-            associateds: _,
-            bridges: _,
-            info: _,
+            span: _,
         } => {
             match expr {
                 Expr {
@@ -823,7 +808,7 @@ fn validate_fn_call_expr(
     genrs: &Vec<Generic>,
     buffer_genrs: Vec<TypeSpec>,
     args: Vec<Expr>,
-    is_stmt: bool, // wheither its from pitú statement or not
+    is_stmt: bool, // wheither itm pitú statement or not
     analyser: &mut Analyser,
 ) {
     let func = get_func_def(&name, analyser);
@@ -954,7 +939,7 @@ fn validate_static_access(
         CustomBlock {
             takes: _,
             globals: _,
-            macro_def: _,
+            // macro_def: _,
             custom_tys: _,
             traits: _,
             workers: _,
@@ -1208,13 +1193,13 @@ fn add_pars_scope(
                 } => {
                     analyser.symbol_table[index].insert(
                         ident.ident.clone(),
-                        Element::Local(BlockLevel::Param {
+                        ElemSignature::Param {
                             state,
                             ty,
                             name: ident,
                             mutable: is_mut,
                             info: StmtInfo { span, docs: vec![] },
-                        }),
+                        },
                     );
                 }
             }
@@ -1222,7 +1207,7 @@ fn add_pars_scope(
     }
 }
 
-fn validate_assoc_fn_call(_expr: Expr, _associations: Vec<CustTyAss>, _analyser: &mut Analyser) {}
+fn validate_assoc_fn_call(_expr: Expr, _analyser: &mut Analyser) {}
 
 pub fn check_for_val_compatibility(
     expr: Expr,
@@ -1240,23 +1225,23 @@ pub fn check_for_val_compatibility(
                 } => {
                     add_pars_scope(pars, analyser);
 
-                    if *expect_state == DataState::ImutRef || *expect_state == DataState::MutRef {
-                        analyser.errs.push(SemanticError {
-                            messages: vec![format!("The number expr {} is not owned by any variable which is what a reference requires", num)],
-                            hints: vec![],
-                            span, //self.get_span_of_expr(ty),
-                        });
-                    } else {
-                        type_checker::is_type_compatible(
-                            &ty,
-                            &TypeSpec {
-                                hint: TypeHint::Number(num),
-                                span,
-                            },
-                            genrs,
-                            analyser,
-                        );
-                    }
+                    // if *expect_state == DataState::ImutRef || *expect_state == DataState::MutRef {
+                    //     analyser.errs.push(SemanticError {
+                    //         messages: vec![format!("The number expr {} is not owned by any variable which is what a reference requires", num)],
+                    //         hints: vec![],
+                    //         span, //self.get_span_of_expr(ty),
+                    //     });
+                    // } else {
+                    type_checker::is_type_compatible(
+                        &ty,
+                        &TypeSpec {
+                            hint: TypeHint::Number(num),
+                            span,
+                        },
+                        genrs,
+                        analyser,
+                    );
+                    // }
                     // self.validate_assignment(&ty, &expr, &vec![], &vec![], symbol_table);
 
                     if pars.len() > 0 {
@@ -1268,23 +1253,15 @@ pub fn check_for_val_compatibility(
                     span,
                 } => {
                     add_pars_scope(pars, analyser);
-                    if *expect_state == DataState::ImutRef || *expect_state == DataState::MutRef {
-                        analyser.errs.push(SemanticError {
-                            messages: vec![format!("Expr {} is not owned by any variable which is what a reference requires", expr.kind)],
-                            hints: vec![],
-                            span, //self.get_span_of_expr(ty),
-                        });
-                    } else {
-                        type_checker::is_type_compatible(
-                            &ty,
-                            &TypeSpec {
-                                hint: TypeHint::ArityLiteral(truth_val),
-                                span,
-                            },
-                            genrs,
-                            analyser,
-                        );
-                    }
+                    type_checker::is_type_compatible(
+                        &ty,
+                        &TypeSpec {
+                            hint: TypeHint::ArityLiteral(truth_val),
+                            span,
+                        },
+                        genrs,
+                        analyser,
+                    );
 
                     if pars.len() > 0 {
                         analyser.symbol_table.pop(); // the parameter scope
@@ -1295,24 +1272,15 @@ pub fn check_for_val_compatibility(
                     span,
                 } => {
                     add_pars_scope(pars, analyser);
-
-                    if *expect_state == DataState::ImutRef || *expect_state == DataState::MutRef {
-                        analyser.errs.push(SemanticError {
-                            messages: vec![format!("Expr {} is not owned by any variable which is what a reference requires", expr.kind)],
-                            hints: vec![],
-                            span, //self.get_span_of_expr(ty),
-                        });
-                    } else {
-                        type_checker::is_type_compatible(
-                            &ty,
-                            &TypeSpec {
-                                hint: TypeHint::StrLiteral,
-                                span,
-                            },
-                            genrs,
-                            analyser,
-                        );
-                    }
+                    type_checker::is_type_compatible(
+                        &ty,
+                        &TypeSpec {
+                            hint: TypeHint::StrLiteral,
+                            span,
+                        },
+                        genrs,
+                        analyser,
+                    );
 
                     if pars.len() > 0 {
                         analyser.symbol_table.pop(); // the parameter scope
@@ -1323,24 +1291,15 @@ pub fn check_for_val_compatibility(
                     span,
                 } => {
                     add_pars_scope(pars, analyser);
-
-                    if *expect_state == DataState::ImutRef || *expect_state == DataState::MutRef {
-                        analyser.errs.push(SemanticError {
-                            messages: vec![format!("This char Expr is not owned by any variable which is what a reference requires")],
-                            hints: vec![],
-                            span, //self.get_span_of_expr(ty),
-                        });
-                    } else {
-                        type_checker::is_type_compatible(
-                            &ty,
-                            &TypeSpec {
-                                hint: TypeHint::CharLiteral,
-                                span,
-                            },
-                            genrs,
-                            analyser,
-                        );
-                    }
+                    type_checker::is_type_compatible(
+                        &ty,
+                        &TypeSpec {
+                            hint: TypeHint::CharLiteral,
+                            span,
+                        },
+                        genrs,
+                        analyser,
+                    );
 
                     if pars.len() > 0 {
                         analyser.symbol_table.pop(); // the parameter scope
@@ -1365,7 +1324,6 @@ pub fn check_for_val_compatibility(
                                         Variable {
                                             state,
                                             ty: _,
-                                            value: _,
                                             is_mutable: _,
                                             ident_span,
                                         } => match state {
@@ -1498,7 +1456,6 @@ pub fn check_for_val_compatibility(
                                         Variable {
                                             state,
                                             ty,
-                                            value: _,
                                             is_mutable: _,
                                             ident_span,
                                         } => match state {
@@ -1619,7 +1576,7 @@ pub fn check_for_val_compatibility(
                                                     }
                                                 } else {
                                                     // kí &ọsán olówó: òmíràn // A ref
-                                                    // kí ọsán orúkọ: kó olówó // has no affix at all
+                                                    // kí ọsán orúkọ: olówó // has no affix at all
                                                     if !impl_copy {
                                                         analyser.errs.push(SemanticError {
                                                             messages: vec![
@@ -1765,15 +1722,15 @@ pub fn check_for_val_compatibility(
                 } => {
                     add_pars_scope(pars, analyser);
 
-                    if *expect_state == DataState::ImutRef || *expect_state == DataState::MutRef {
-                        analyser.errs.push(SemanticError {
-                            messages: vec![format!(
-                                "This Struct is not owned by any variable which is what a reference requires",
-                            )],
-                            hints: vec![],
-                            span, //self.get_span_of_expr(ty),
-                        });
-                    } else {
+                    // if *expect_state == DataState::ImutRef || *expect_state == DataState::MutRef {
+                    //     analyser.errs.push(SemanticError {
+                    //         messages: vec![format!(
+                    //             "This Struct is not owned by any variable which is what a reference requires",
+                    //         )],
+                    //         hints: vec![],
+                    //         span, //self.get_span_of_expr(ty),
+                    //     });
+                    // } else {
                         // type_checker::is_type_compatible(
                         //     &ty,
                         //     &TypeSpec {
@@ -1785,11 +1742,12 @@ pub fn check_for_val_compatibility(
                         // );
                         match &ty.hint {
                             TypeHint::Custom {
-                                import,
-                                ident: par_ident,
+                                get,
+                                access,
                                 generics: _,
                             } => {
-                                let type_def = analyser.get_custom_type(import, par_ident, genrs);
+                                let type_def =
+                                    analyser.get_custom_type(get, access, genrs);
                                 if type_def.is_some() {
                                     validate_custom_type_value(
                                         &type_def.unwrap(),
@@ -1798,19 +1756,24 @@ pub fn check_for_val_compatibility(
                                         analyser,
                                     );
                                 } else {
+                                    let ty = if access.len() == 0 {
+                                        get.clone()
+                                    } else {
+                                        access.last().unwrap().clone()
+                                    };
                                     analyser.errs.push(SemanticError {
                                         messages: vec![format!(
                                             "Type definition for '{}' not found in this scope",
-                                            par_ident.ident
+                                            ty.ident
                                         )],
                                         hints: vec![],
-                                        span: par_ident.span.clone(), //self.get_span_of_expr(ty),
+                                        span: ty.span.clone(), //self.get_span_of_expr(ty),
                                     });
                                 }
                             }
                             _ => (),
                         }
-                    }
+                    // }
 
                     if pars.len() > 0 {
                         analyser.symbol_table.pop(); // the parameter scope
@@ -1818,7 +1781,7 @@ pub fn check_for_val_compatibility(
                 }
                 Expr {
                     kind:
-                        ExprKind::ElemNamespaceAccess {
+                        ExprKind::NamespaceAccess {
                             ident,
                             access: kind,
                         },
@@ -1826,217 +1789,222 @@ pub fn check_for_val_compatibility(
                 } => {
                     add_pars_scope(pars, analyser);
 
-                    if *expect_state == DataState::ImutRef || *expect_state == DataState::MutRef {
-                        analyser.errs.push(SemanticError {
-                            messages: vec![format!(
-                                "The value from the namespace is not owned by any variable which is what a reference requires",
-                            )],
-                            hints: vec![],
-                            span, //self.get_span_of_expr(ty),
-                        });
+                    let mut val_ident = Ident {
+                        ident: String::from("<Unknown>"),
+                        span: Span {
+                            st: Pos { column: 0, line: 0 },
+                            en: Pos { column: 0, line: 0 },
+                            file: analyser.modl.clone(),
+                        },
+                    };
+                    let elem = if ident.is_some() {
+                        val_ident = ident.clone().unwrap();
+                        analyser.get_element(&ident.clone().unwrap())
                     } else {
-                        let mut val_ident = Ident {
-                            ident: String::from("<Unknown>"),
-                            span: Span {
-                                st: Pos { column: 0, line: 0 },
-                                en: Pos { column: 0, line: 0 },
-                                file: analyser.modl.clone(),
-                            },
-                        };
-                        let elem = if ident.is_some() {
-                            val_ident = ident.clone().unwrap();
-                            analyser.get_element(&ident.clone().unwrap())
-                        } else {
-                            // Infer Namespace/Type
-                            // kí Àwọ̀ ire: .Funfun
-                            match &ty.hint {
-                                TypeHint::Custom {
-                                    import,
-                                    ident,
-                                    generics: _,
-                                } => {
-                                    val_ident = ident.clone();
-                                    if import.is_none() {
-                                        analyser.get_element(ident)
+                        // Infer Namespace/Type
+                        // kí Àwọ̀ ire: .Funfun
+                        // then access most have exactly one item then
+                        match &ty.hint {
+                            TypeHint::Custom {
+                                get,
+                                access,
+                                generics: _,
+                            } => {
+                                val_ident = ident.clone();
+                                if import.is_none() {
+                                    analyser.get_element(ident)
+                                } else {
+                                    let import = import.clone().unwrap();
+                                    // kí irúfẹ́\Àwọ̀ ire: .Funfun
+
+                                    let elem = analyser.get_custom_from_take(
+                                        (
+                                            FullTok {
+                                                kind: Token::Identifier(ident.ident.clone()),
+                                                span: ident.span.clone(),
+                                            },
+                                            None,
+                                        ),
+                                        import.1,
+                                        import.0,
+                                    );
+
+                                    if elem.is_some() {
+                                        match elem.clone() {
+                                            Some(TopLevel::StructDecl {
+                                                ident,
+                                                generic_types,
+                                                vals,
+                                                traits,
+                                                public,
+                                                info: _,
+                                            }) => Some(ElemSignature::StructDecl {
+                                                ident,
+                                                generic_types,
+                                                vals,
+                                                traits,
+                                                public,
+                                                span,
+                                            }),
+                                            Some(TopLevel::EnumDecl {
+                                                ident,
+                                                generic_types,
+                                                vals,
+                                                traits,
+                                                public,
+                                                info: _,
+                                            }) => Some(ElemSignature::EnumDecl {
+                                                ident,
+                                                generic_types,
+                                                vals,
+                                                traits,
+                                                public,
+                                                span,
+                                            }),
+                                            _ => None,
+                                        }
                                     } else {
-                                        let import = import.clone().unwrap();
-                                        // kí irúfẹ́\Àwọ̀ ire: .Funfun
-
-                                        let elem = analyser.get_custom_from_take(
-                                            (
-                                                FullTok {
-                                                    kind: Token::Identifier(ident.ident.clone()),
-                                                    span: ident.span.clone(),
-                                                },
-                                                None,
-                                            ),
-                                            import.1,
-                                            import.0,
-                                        );
-
-                                        if elem.is_some() {
-                                            match &elem {
-                                                Some(TopLevel::StructDecl { .. })
-                                                | Some(TopLevel::EnumDecl { .. }) => {
-                                                    Some(Element::Global(elem.unwrap()))
-                                                }
-                                                _ => None,
-                                            }
-                                        } else {
-                                            None
-                                        }
+                                        None
                                     }
                                 }
-                                _ => None,
                             }
-                        };
-
-                        if elem.is_some() {
-                            let elem = elem.unwrap();
-                            match elem {
-                                Element::Global(top) => {
-                                    match top {
-                                        TopLevel::EnumDecl {
-                                            ident: _,
-                                            generic_types: _,
-                                            vals: _,
-                                            traits: _,
-                                            public: _,
-                                            associateds: _,
-                                            bridges: _,
-                                            info: _,
-                                        } => {
-                                            validate_custom_type_value(&top, ty, &expr, analyser);
-                                            // if variant not found, the function calls validate_ass_fn_call() function
-                                        }
-                                        TopLevel::StructDecl {
-                                            ident: _,
-                                            generic_types: _,
-                                            vals: _,
-                                            traits: _,
-                                            public: _,
-                                            associateds,
-                                            bridges: _,
-                                            info: _,
-                                        } => {
-                                            // most be an associated function
-                                            validate_assoc_fn_call(*kind, associateds, analyser);
-                                        }
-                                        TopLevel::StaticDef {
-                                            ident,
-                                            public: _,
-                                            block: static_block,
-                                            info: _,
-                                        } => {
-                                            // The block is like a seperate module with it's own namespace
-                                            validate_static_access(
-                                                expect,
-                                                pars,
-                                                &ident,
-                                                ty,
-                                                static_block,
-                                                &kind,
-                                                expect_state,
-                                                genrs,
-                                                analyser,
-                                            );
-                                        }
-                                        TopLevel::TakeStmt {
-                                            take,
-                                            from,
-                                            lib,
-                                            info: _,
-                                        } => {
-                                            let source = analyser
-                                                .get_namespace_from_take(&take, &from, &lib);
-
-                                            if source.is_some() {
-                                                let top = source.unwrap();
-                                                match &top {
-                                                    TopLevel::EnumDecl {
-                                                        ident: _,
-                                                        generic_types: _,
-                                                        vals: _,
-                                                        traits: _,
-                                                        public: _,
-                                                        associateds: _,
-                                                        bridges: _,
-                                                        info: _,
-                                                    } => {
-                                                        validate_custom_type_value(
-                                                            &top, ty, &expr, analyser,
-                                                        );
-                                                        // if variant not found, the function calls validate_ass_fn_call() function
-                                                    }
-                                                    TopLevel::StructDecl {
-                                                        ident: _,
-                                                        generic_types: _,
-                                                        vals: _,
-                                                        traits: _,
-                                                        public: _,
-                                                        associateds,
-                                                        bridges: _,
-                                                        info: _,
-                                                    } => {
-                                                        // most be an associated function
-                                                        validate_assoc_fn_call(
-                                                            *kind,
-                                                            associateds.clone(),
-                                                            analyser,
-                                                        );
-                                                    }
-                                                    TopLevel::StaticDef {
-                                                        ident,
-                                                        public: _,
-                                                        block: static_block,
-                                                        info: _,
-                                                    } => {
-                                                        // The block is like a seperate module with it's own namespace
-                                                        validate_static_access(
-                                                            expect,
-                                                            pars,
-                                                            &ident,
-                                                            ty,
-                                                            static_block.clone(),
-                                                            &kind,
-                                                            expect_state,
-                                                            genrs,
-                                                            analyser,
-                                                        );
-                                                    }
-                                                    _ => (),
-                                                }
-                                            } else {
-                                                analyser.errs.push(SemanticError {
-                                                    messages: vec![format!(
-                                                        "{} is not found in {}",
-                                                        take.0.kind, from
-                                                    )],
-                                                    hints: vec![],
-                                                    span: take.0.span,
-                                                });
-                                            }
-                                        }
-                                        _ => {
-                                            // Err
-                                            todo!("Not yet implemented");
-                                        }
-                                    }
-                                }
-                                Element::Local(_) => {
-                                    todo!("todo");
-                                }
-                            }
-                        } else {
-                            analyser.errs.push(SemanticError {
-                                messages: vec![format!(
-                                    "{} is not found in scope",
-                                    val_ident.ident
-                                )],
-                                hints: vec![],
-                                span: val_ident.span,
-                            });
+                            _ => None,
                         }
+                    };
+
+                    if elem.is_some() {
+                        let elem = elem.unwrap();
+                        match elem {
+                            ElemSignature::EnumDecl { .. } => {
+                                // if the reture signature is of an enum defination,
+                                // then the access len must be exactly one(i.e the variant or assfunc)
+                                if kind.len() == 1 {
+                                    validate_custom_type_value(&elem, ty, &kind[0], analyser);
+                                } else {
+                                    todo!("Unexpected emum variant")
+                                }
+
+                                // if variant not found, the function calls validate_ass_fn_call() function
+                            }
+                            ElemSignature::StructDecl {
+                                ident: _,
+                                generic_types: _,
+                                vals: _,
+                                traits: _,
+                                public: _,
+                                span: _,
+                            } => {
+                                // most be an associated function
+                                if kind.len() == 1 {
+                                    validate_assoc_fn_call(kind[0].clone(), analyser);
+                                } else {
+                                    todo!("Unexpected struct assFuntion")
+                                }
+                            }
+                            // ElemSignature::StaticDef {
+                            //     ident,
+                            //     public: _,
+                            //     span: _,
+                            // } => {
+                            //     // The block is like a seperate module with it's own namespace
+                            //     validate_static_access(
+                            //         expect,
+                            //         pars,
+                            //         &ident,
+                            //         ty,
+                            //         static_block,
+                            //         &kind,
+                            //         expect_state,
+                            //         genrs,
+                            //         analyser,
+                            //     );
+                            // }
+                            // TopLevel::TakeStmt {
+                            //     take,
+                            //     from,
+                            //     lib,
+                            //     info: _,
+                            // } => {
+                            //     let source = analyser
+                            //         .get_namespace_from_take(&take, &from, &lib)
+                            //     if source.is_some() {
+                            //         let top = source.unwrap();
+                            //         match &top {
+                            //             TopLevel::EnumDecl {
+                            //                 ident: _,
+                            //                 generic_types: _,
+                            //                 vals: _,
+                            //                 traits: _,
+                            //                 public: _,
+                            //                 associateds: _,
+                            //                 bridges: _,
+                            //                 info: _,
+                            //             } => {
+                            //                 validate_custom_type_value(
+                            //                     &top, ty, &expr, analyser,
+                            //                 );
+                            //                 // if variant not found, the function calls validate_ass_fn_call() function
+                            //             }
+                            //             TopLevel::StructDecl {
+                            //                 ident: _,
+                            //                 generic_types: _,
+                            //                 vals: _,
+                            //                 traits: _,
+                            //                 public: _,
+                            //                 associateds,
+                            //                 bridges: _,
+                            //                 info: _,
+                            //             } => {
+                            //                 // most be an associated function
+                            //                 validate_assoc_fn_call(
+                            //                     *kind,
+                            //                     associateds.clone(),
+                            //                     analyser,
+                            //                 );
+                            //             }
+                            //             TopLevel::StaticDef {
+                            //                 ident,
+                            //                 public: _,
+                            //                 block: static_block,
+                            //                 info: _,
+                            //             } => {
+                            //                 // The block is like a seperate module with it's own namespace
+                            //                 validate_static_access(
+                            //                     expect,
+                            //                     pars,
+                            //                     &ident,
+                            //                     ty,
+                            //                     static_block.clone(),
+                            //                     &kind,
+                            //                     expect_state,
+                            //                     genrs,
+                            //                     analyser,
+                            //                 );
+                            //             }
+                            //             _ => (),
+                            //         }
+                            //     } else {
+                            //         analyser.errs.push(SemanticError {
+                            //             messages: vec![format!(
+                            //                 "{} is not found in {}",
+                            //                 take.0.kind, from
+                            //             )],
+                            //             hints: vec![],
+                            //             span: take.0.span,
+                            //         });
+                            //     }
+                            // }
+                            _ => {
+                                // Err
+                                todo!("Not yet implemented");
+                            }
+                        }
+                    } else {
+                        analyser.errs.push(SemanticError {
+                            messages: vec![format!("{} is not found in scope", val_ident.ident)],
+                            hints: vec![],
+                            span: val_ident.span,
+                        });
                     }
 
                     if pars.len() > 0 {
@@ -2335,11 +2303,10 @@ pub fn check_for_val_compatibility(
                                                 let var = analyser.get_var(ident);
 
                                                 if var.is_some() {
-                                                    match var.unwrap().0 {
+                                                    match var.unwrap() {
                                                         Variable {
                                                             state,
                                                             ty,
-                                                            value: _,
                                                             is_mutable,
                                                             ident_span,
                                                         } => {
@@ -2464,7 +2431,7 @@ pub fn check_for_val_compatibility(
 
 fn add_to_global_scope(
     ident: Ident,
-    glo_elem: TopLevel,
+    glo_elem: ElemSignature,
     // span: &Span,
     analyser: &mut Analyser,
 ) {
@@ -2478,30 +2445,31 @@ fn add_to_global_scope(
             span: ident.span.clone(),
         });
     } else {
-        analyser.symbol_table[0].insert(ident.ident, Element::Global(glo_elem));
+        analyser.symbol_table[0].insert(ident.ident, glo_elem);
     }
 }
 
 fn init_global_scope(
     modl: Option<&Mod>,
-    static_block: Option<&CustomBlock>, // can only have either hir or static_block not both
+    static_block: Option<&CustomBlock>, // should only have either hir or static_block not both
     analyser: &mut Analyser,
 ) {
     if modl.is_some() {
         let modl = modl.unwrap();
         // For Global variables
         for each in &modl.globals {
-            match each {
+            match each.clone() {
                 TopLevel::GlobalDecl {
-                    interpret: _,
-                    state: _,
-                    ty: _,
+                    interpret,
+                    state,
+                    ty,
                     name, // should come in handy with span, for precise error handling
                     value: _,
-                    public: _,
-                    info: _,
+                    public,
+                    info,
                 } => {
-                    add_to_global_scope(name.clone(), each.clone(), analyser);
+                    let glob = ElemSignature::GlobalDecl { interpret, state, ty, name, public, span: info.span };
+                    add_to_global_scope(name.clone(), glob, analyser);
                 }
                 _ => (),
             }
@@ -2509,22 +2477,23 @@ fn init_global_scope(
 
         // For Global functions
         for each in &modl.fns {
-            match each {
+            match each.clone() {
                 TopLevel::FuncDecl {
-                    is_async: _,
-                    expect: _,
-                    ret_state: _,
+                    is_async,
+                    expect,
+                    ret_state,
                     ident,
-                    generics: _,
-                    is_visible: _,
-                    is_public: _,
-                    is_extern: _,
-                    par: _,
-                    worker_usage: _,
+                    generics,
+                    is_visible,
+                    is_public,
+                    is_extern,
+                    par,
+                    worker_usage,
                     block: _,
-                    info: _,
+                    info,
                 } => {
-                    add_to_global_scope(ident.clone(), each.clone(), analyser);
+                    let func = ElemSignature::FuncDecl { is_async, expect, ret_state, ident, generics, is_visible, is_public, is_extern, par, worker_usage, span: info.span};
+                    add_to_global_scope(ident.clone(), func, analyser);
                 }
                 _ => (),
             }

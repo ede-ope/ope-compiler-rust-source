@@ -8,7 +8,8 @@ use crate::{
         TopLevel, TypeHint, TypeSpec,
     },
     scanner::{Pos, Span, TruthVal},
-    analyser::{Analyser, Element, Variable},
+    analyser::{Analyser, Variable},
+    name_resolver::ElemSignature
 };
 
 pub fn adjust_func_return(ret: &TypeSpec) -> TypeSpec {
